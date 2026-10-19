@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# User local encrypted bookmark vault & runtime data (never commit personal data)
+data/
+
+# Logs & OS files
+*.log
+npm-debug.log*
+Thumbs.db
+.DS_Store

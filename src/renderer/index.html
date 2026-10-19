@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Blink · 灵动书签</title>
+  <link rel="icon" href="../../logo.ico" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="theme-dark font-normal">
+
+  <!-- ==================== 1. FLOATING ORB VIEW (缩进小圆圈悬浮球模式) ==================== -->
+  <div id="orbView" class="orb-container hidden" title="点击展开书签面板 · 按住可拖动位置">
+    <div class="orb-glow"></div>
+    <div class="orb-button" id="orbButton">
+      <img src="../../logo.ico" alt="Blink" class="orb-logo-img" draggable="false" />
+      <span class="orb-badge" id="orbCountBadge">0</span>
+    </div>
+  </div>
+
+  <!-- ==================== 2. MAIN PANEL VIEW (展开小巧面板模式) ==================== -->
+  <div id="panelView" class="app-shell">
+
+    <!-- Top Custom Titlebar (Draggable) -->
+    <header class="titlebar">
+      <div class="titlebar-drag">
+        <div class="brand-logo">
+          <img src="../../logo.ico" alt="Blink" class="brand-logo-img" draggable="false" />
+        </div>
+        <span class="brand-title">Blink</span>
+        <span class="brand-subtitle">灵动书签</span>
+      </div>
+
+      <div class="titlebar-actions">
+        <!-- Pin Always-on-Top Toggle -->
+        <button id="btnAlwaysOnTop" class="icon-btn active" title="窗口置顶：开启后始终浮于所有窗口最前面">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>
+          </svg>
+        </button>
+
+        <!-- Keep Expanded vs Auto-Collapse Toggle -->
+        <button id="btnKeepExpanded" class="icon-btn active" title="锁定展开状态（关闭后点击窗口外部将自动缩回小圆圈）">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="3"/>
+            <path d="M9 3v18"/>
+          </svg>
+        </button>
+
+        <!-- Shrink to Floating Orb Button -->
+        <button id="btnCollapseToOrb" class="icon-btn orb-trigger-btn" title="缩进为桌面悬浮小圆圈">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="6"/>
+            <circle cx="12" cy="12" r="2" fill="currentColor"/>
+          </svg>
+          <span class="btn-mini-label">悬浮球</span>
+        </button>
+
+        <!-- Theme Switch -->
+        <button id="btnThemeToggle" class="icon-btn" title="切换深色 / 浅色毛玻璃主题">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+
+        <!-- Lock Now -->
+        <button id="btnLockNow" class="icon-btn" title="立即上锁">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+          </svg>
+        </button>
+
+        <!-- Settings -->
+        <button id="btnOpenSettings" class="icon-btn" title="设置（修改密码、导入书签、显示偏好）">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+
+        <!-- Close App -->
+        <button id="btnCloseApp" class="icon-btn danger-hover" title="退出软件">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- ==================== PASSWORD LOCK OVERLAY (密码锁界面) ==================== -->
+    <section id="authOverlay" class="auth-overlay">
+      <div class="auth-card">
+        <div class="auth-icon-wrap">
+          <img src="../../logo.ico" alt="Blink" class="auth-logo-img" draggable="false" />
+        </div>
+
+        <h2 id="authTitle" class="auth-title">解锁 Blink 书签库</h2>
+        <p id="authDesc" class="auth-desc">请输入您的访问密码以解密并查看书签</p>
+        <div class="crypto-shield-badge">🛡️ AES-256-GCM 零知识本地全量加密</div>
+
+        <form id="authForm" class="auth-form" autocomplete="off">
+          <div class="input-group">
+            <input type="password" id="authPasswordInput" class="glass-input center-text" placeholder="请输入密码..." required autofocus />
+          </div>
+
+          <div id="authConfirmGroup" class="input-group hidden">
+            <input type="password" id="authConfirmInput" class="glass-input center-text" placeholder="请再次输入密码确认..." />
+          </div>
+
+          <div id="authHintGroup" class="input-group hidden">
+            <input type="text" id="authHintInput" class="glass-input center-text" placeholder="密码提示语（选填，防遗忘）" />
+          </div>
+
+          <div id="authHintDisplay" class="auth-hint-text hidden"></div>
+          <div id="authErrorMsg" class="auth-error hidden"></div>
+
+          <button type="submit" id="authSubmitBtn" class="primary-btn full-width">
+            立即解锁
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- ==================== UNLOCKED MAIN WORKSPACE ==================== -->
+    <main id="mainWorkspace" class="workspace hidden">
+
+      <!-- Target Browser Live Bar (当前响应浏览器窗口指示器) -->
+      <div class="browser-target-bar" id="browserTargetBar" title="点击可查看或手动切换当前打开的浏览器窗口">
+        <span class="status-dot pulse" id="targetStatusDot"></span>
+        <span class="target-label">当前响应窗口:</span>
+        <span class="target-name" id="targetBrowserText">正在检测活动浏览器...</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="target-chevron">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+      </div>
+
+      <!-- Search + Primary Action Toolbar -->
+      <div class="toolbar">
+        <div class="search-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="search-icon">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input type="text" id="searchInput" class="search-input" placeholder="搜索全部书签备注、分类或关键字..." />
+          <button id="btnClearSearch" class="clear-search-btn hidden" title="清空搜索">×</button>
+        </div>
+
+        <button id="btnAddBookmark" class="add-bm-btn" title="新建书签">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          <span>新增</span>
+        </button>
+      </div>
+
+      <!-- Category Filter & Color Tabs (支持拖拽书签到分类标签归类) -->
+      <div class="categories-wrapper">
+        <div class="categories-scroll" id="categoryTabs">
+          <!-- Dynamically populated category pills -->
+        </div>
+        <div class="categories-tools">
+          <button id="btnAddCategory" class="cat-tool-btn" title="新增 / 编辑 / 删除分类夹">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              <line x1="12" y1="11" x2="12" y2="17"/>
+              <line x1="9" y1="14" x2="15" y2="14"/>
+            </svg>
+            <span>分类管理</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Sub-header: Count, Color Filter, Batch Mode & Import Quick Button -->
+      <div class="sub-toolbar">
+        <div class="color-filter-dots" id="colorFilterBar" title="按颜色快速筛选书签">
+          <!-- Populated by JS -->
+        </div>
+
+        <div class="sub-toolbar-right">
+          <button id="btnQuickImport" class="text-action-btn" title="从谷歌/Edge/Brave导出的HTML文件增量导入书签">
+            📥 导入书签
+          </button>
+          <button id="btnToggleBatch" class="text-action-btn" title="开启批量勾选删除或归类整理">
+            ☑ 整理
+          </button>
+        </div>
+      </div>
+
+      <!-- Batch Action Bar (Shown when in Batch Organize mode) -->
+      <div id="batchActionBar" class="batch-bar hidden">
+        <label class="batch-check-all">
+          <input type="checkbox" id="batchSelectAll" />
+          <span id="batchSelectedCount">已选 0 项</span>
+        </label>
+        <div class="batch-actions">
+          <select id="batchMoveCategorySelect" class="batch-select">
+            <option value="">移动到分类...</option>
+          </select>
+          <button id="btnBatchDelete" class="batch-del-btn">删除所选</button>
+          <button id="btnExitBatch" class="batch-cancel-btn">完成</button>
+        </div>
+      </div>
+
+      <!-- Bookmarks List Container (支持拖拽排序) -->
+      <div id="bookmarkList" class="bookmark-list">
+        <!-- Dynamically rendered bookmark cards -->
+      </div>
+
+      <!-- Empty State -->
+      <div id="emptyState" class="empty-state hidden">
+        <div class="empty-illustration">✨</div>
+        <div class="empty-title" id="emptyTitle">暂无匹配的书签</div>
+        <div class="empty-subtitle" id="emptySubtitle">点击右上角「新增」添加书签，或点击「导入书签」导入浏览器收藏夹</div>
+        <div class="empty-actions">
+          <button id="btnEmptyAdd" class="secondary-btn">+ 新建书签</button>
+          <button id="btnEmptyImport" class="secondary-btn">📥 导入谷歌书签</button>
+        </div>
+      </div>
+
+    </main>
+
+    <!-- ==================== MODALS ==================== -->
+
+    <!-- 1. Add / Edit Bookmark Modal -->
+    <div id="bookmarkModal" class="modal-backdrop hidden">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3 id="bmModalTitle">新建书签</h3>
+          <button class="modal-close" data-close="bookmarkModal">×</button>
+        </div>
+        <form id="bookmarkForm" class="modal-body" autocomplete="off">
+          <input type="hidden" id="bmIdInput" />
+
+          <div class="form-field">
+            <label>书签显眼备注名称 <span class="req">*</span></label>
+            <input type="text" id="bmTitleInput" class="glass-input" placeholder="例如：谷歌第3号工作台 · 数据看板" required />
+          </div>
+
+          <div class="form-field">
+            <label>网页链接 (URL，界面上将自动隐藏) <span class="req">*</span></label>
+            <input type="text" id="bmUrlInput" class="glass-input" placeholder="https://..." required />
+          </div>
+
+          <div class="form-field">
+            <label>补充说明 / 副标题备注（选填）</label>
+            <input type="text" id="bmNoteInput" class="glass-input" placeholder="可填写账号提示、用途备注等..." />
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-field">
+              <label>所属分类夹</label>
+              <select id="bmCategorySelect" class="glass-select"></select>
+            </div>
+            <div class="form-field">
+              <label>置顶显示</label>
+              <label class="switch-row">
+                <input type="checkbox" id="bmPinnedInput" />
+                <span>排在列表最前</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="form-field">
+            <label>专属色彩标记（让书签更直观醒目）</label>
+            <div id="bmColorPicker" class="color-picker-grid"></div>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="ghost-btn" data-close="bookmarkModal">取消</button>
+            <button type="submit" class="primary-btn">保存书签</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- 2. Add / Edit Category Modal -->
+    <div id="categoryModal" class="modal-backdrop hidden">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3 id="catModalTitle">分类夹管理</h3>
+          <button class="modal-close" data-close="categoryModal">×</button>
+        </div>
+        <div class="modal-body">
+          <form id="categoryForm" class="cat-form-inline" autocomplete="off">
+            <input type="hidden" id="catIdInput" />
+            <input type="text" id="catNameInput" class="glass-input" placeholder="输入新分类名称（如：Web3多开、常用工具）..." required />
+            <div id="catColorPicker" class="color-picker-grid compact"></div>
+            <div class="cat-form-btns">
+              <button type="button" id="btnCancelCatEdit" class="ghost-btn hidden">取消编辑</button>
+              <button type="submit" id="btnSaveCategory" class="primary-btn">+ 添加分类</button>
+            </div>
+          </form>
+
+          <div class="divider"></div>
+          <div class="cat-manage-label">现有分类夹（可修改名称/颜色，或直接删除分类夹）：</div>
+          <div id="categoryManageList" class="cat-manage-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2B. Delete Category Confirmation & Choice Modal -->
+    <div id="deleteCategoryModal" class="modal-backdrop hidden" style="z-index: 120;">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3 id="delCatModalTitle">删除分类夹</h3>
+          <button class="modal-close" data-close="deleteCategoryModal">×</button>
+        </div>
+        <div class="modal-body">
+          <p id="delCatModalDesc" class="del-cat-desc"></p>
+
+          <!-- Shown when category contains bookmarks -->
+          <div id="delCatWithItemsBox" class="del-cat-choices">
+            <button type="button" id="btnDelCatKeepBm" class="del-choice-btn keep">
+              <div class="del-choice-title">📁 仅删除分类夹，保留里面的书签</div>
+              <div class="del-choice-sub">书签将自动放入「全部」中（归为未分类，绝不丢失）</div>
+            </button>
+
+            <button type="button" id="btnDelCatRemoveBm" class="del-choice-btn danger">
+              <div class="del-choice-title">🗑️ 删除分类夹，同时删除夹子内所有书签</div>
+              <div class="del-choice-sub">将该分类夹及其内部的全部书签一并彻底清空</div>
+            </button>
+          </div>
+
+          <!-- Shown when category is empty (0 bookmarks) -->
+          <div id="delCatEmptyBox" class="del-cat-choices hidden">
+            <button type="button" id="btnDelCatEmptyConfirm" class="del-choice-btn danger">
+              <div class="del-choice-title">🗑️ 确认删除该空分类夹</div>
+              <div class="del-choice-sub">该分类夹内没有任何书签，可直接安全移除</div>
+            </button>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="ghost-btn full-width" data-close="deleteCategoryModal">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. Browser Window Selector Modal -->
+    <div id="browserModal" class="modal-backdrop hidden">
+      <div class="modal-dialog">
+        <div class="modal-header">
+          <h3>当前检测到的浏览器窗口</h3>
+          <button class="modal-close" data-close="browserModal">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="helper-note">
+            💡 默认情况下，您刚才点击操作过哪个浏览器窗口（包括谷歌多开、Brave多开、Edge等），点击书签就会<strong>自动在那个浏览器窗口中新增标签页</strong>打开。您也可以在下方点击指定某个窗口作为当前目标：
+          </p>
+          <div id="openBrowsersList" class="browser-win-list"></div>
+          <div class="modal-footer">
+            <button type="button" id="btnRefreshBrowsers" class="secondary-btn">🔄 刷新列表</button>
+            <button type="button" class="primary-btn" data-close="browserModal">确定</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. Settings & Password Modification & Import Modal -->
+    <div id="settingsModal" class="modal-backdrop hidden">
+      <div class="modal-dialog settings-dialog">
+        <div class="modal-header">
+          <h3>软件设置与管理</h3>
+          <button class="modal-close" data-close="settingsModal">×</button>
+        </div>
+        <div class="modal-body settings-scroll">
+
+          <!-- Section A: Import Bookmarks -->
+          <div class="settings-section">
+            <div class="section-title">📥 导入浏览器书签（增量新增 · 不覆盖）</div>
+            <p class="section-desc">
+              支持导入从 Google Chrome、Brave、Microsoft Edge 等导出的 HTML 书签文件。每次导入均为<strong>新增书签</strong>，绝不会覆盖您现有的书签。
+            </p>
+            <div class="import-row">
+              <input type="text" id="importDefaultFolderInput" class="glass-input" placeholder="默认导入分类名（选填，默认保留原文件夹名）" />
+              <button type="button" id="btnSettingsImportFile" class="primary-btn">选择 HTML 文件导入</button>
+            </div>
+          </div>
+
+          <!-- Section B: Window & Display Preferences -->
+          <div class="settings-section">
+            <div class="section-title">✨ 界面与悬浮窗设置</div>
+
+            <div class="setting-item">
+              <div>
+                <div class="setting-name">窗口始终置顶</div>
+                <div class="setting-sub">开启后软件始终显示在所有桌面窗口最前面</div>
+              </div>
+              <input type="checkbox" id="setAlwaysOnTop" class="toggle-checkbox" />
+            </div>
+
+            <div class="setting-item">
+              <div>
+                <div class="setting-name">点击外部自动缩回小圆圈（悬浮球）</div>
+                <div class="setting-sub">当顶部未开启「锁定展开」时，点击桌面其他区域自动变为小圆圈</div>
+              </div>
+              <input type="checkbox" id="setAutoCollapse" class="toggle-checkbox" />
+            </div>
+
+            <div class="setting-item">
+              <div>
+                <div class="setting-name">书签备注字体大小</div>
+                <div class="setting-sub">调整书签文字的醒目程度</div>
+              </div>
+              <select id="setFontSize" class="glass-select small-select">
+                <option value="normal">标准清晰 (15px)</option>
+                <option value="large">超大醒目 (17px)</option>
+              </select>
+            </div>
+
+            <div class="setting-item">
+              <div>
+                <div class="setting-name">多开浏览器打开方式</div>
+                <div class="setting-sub">如何在上一个响应的浏览器界面打开新标签页</div>
+              </div>
+              <select id="setOpenMode" class="glass-select small-select">
+                <option value="auto">智能多开直达（推荐）</option>
+                <option value="hotkey">精准窗口热键新标签 (Ctrl+T)</option>
+                <option value="cmdline">浏览器进程命令行直调</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Section C: Change Password -->
+          <div class="settings-section">
+            <div class="section-title">🔐 修改启动安全密码</div>
+            <form id="changePwdForm" class="pwd-form" autocomplete="off">
+              <input type="password" id="oldPwdInput" class="glass-input" placeholder="输入当前原密码" required />
+              <input type="password" id="newPwdInput" class="glass-input" placeholder="输入新密码" required />
+              <input type="password" id="confirmNewPwdInput" class="glass-input" placeholder="再次确认新密码" required />
+              <input type="text" id="newPwdHintInput" class="glass-input" placeholder="新的密码提示语（选填）" />
+              <div id="changePwdMsg" class="pwd-msg hidden"></div>
+              <button type="submit" class="primary-btn">确认修改密码</button>
+            </form>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toastContainer" class="toast-container"></div>
+
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

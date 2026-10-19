@@ -1,0 +1,21 @@
+{
+  "name": "blink-bookmarks",
+  "version": "1.0.0",
+  "description": "Blink - 灵动桌面书签管家 (支持多开浏览器直达、悬浮球置顶、密码锁、色彩归类)",
+  "main": "src/main/main.js",
+  "scripts": {
+    "build:native": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1",
+    "start": "electron ."
+  },
+  "keywords": [
+    "bookmarks",
+    "floating",
+    "desktop",
+    "electron"
+  ],
+  "author": "Blink",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}
