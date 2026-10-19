@@ -4,6 +4,17 @@ node_modules/
 # User local encrypted bookmark vault & runtime data (never commit personal data)
 data/
 
+# Environment & credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build outputs & installers (published via GitHub Releases)
+dist/
+release/
+
 # Logs & OS files
 *.log
 npm-debug.log*

@@ -298,21 +298,6 @@ namespace BlinkNative
                     {
                         EmitBrowserList();
                     }
-                    else if (cmd == "debug")
-                    {
-                        EnumWindows((hWnd, lParam) =>
-                        {
-                            if (!IsWindowVisible(hWnd)) return true;
-                            BrowserInfo info = InspectBrowserWindow(hWnd, true);
-                            if (info != null)
-                            {
-                                Console.WriteLine(string.Format(
-                                    "HWND={0} PID={1} ICONIC={2} PN={3} PROFILE={4} TITLE={5}",
-                                    info.Hwnd, info.Pid, IsIconic(hWnd), info.ProcessName, info.ProfileDir, info.Title));
-                            }
-                            return true;
-                        }, IntPtr.Zero);
-                    }
                     else if (cmd == "select")
                     {
                         string hwndStr = ExtractJsonString(line, "hwnd");
@@ -528,13 +513,13 @@ namespace BlinkNative
                     Match mProf = Regex.Match(relaunchCmd, @"--profile-directory=(?:""([^""]+)""|([^\s""]+))", RegexOptions.IgnoreCase);
                     if (mProf.Success)
                     {
-                        profileDir = (mProf.Groups[1].Success ? mProf.Groups[1].Value : mProf.Groups[2].Value).Trim();
+                        profileDir = SanitizeSafeProfileDir(mProf.Groups[1].Success ? mProf.Groups[1].Value : mProf.Groups[2].Value);
                     }
 
                     Match mData = Regex.Match(relaunchCmd, @"--user-data-dir=(?:""([^""]+)""|([^\s""]+))", RegexOptions.IgnoreCase);
                     if (mData.Success)
                     {
-                        userDataDir = (mData.Groups[1].Success ? mData.Groups[1].Value : mData.Groups[2].Value).Trim();
+                        userDataDir = SanitizeSafeUserDataDir(mData.Groups[1].Success ? mData.Groups[1].Value : mData.Groups[2].Value);
                     }
                     return !string.IsNullOrEmpty(profileDir) || !string.IsNullOrEmpty(userDataDir);
                 }
@@ -677,6 +662,48 @@ namespace BlinkNative
             return rawTitle;
         }
 
+        private static string SanitizeSafeProfileDir(string candidate)
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) return "";
+            string trimmed = candidate.Trim();
+            if (trimmed.Length > 64 || trimmed.StartsWith("-")) return "";
+            if (!Regex.IsMatch(trimmed, @"^[A-Za-z0-9 _.\-]+$")) return "";
+            if (trimmed.Contains("..")) return "";
+            return trimmed;
+        }
+
+        private static string SanitizeSafeUserDataDir(string candidate)
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) return "";
+            string trimmed = candidate.Trim();
+            if (trimmed.Length > 260 || trimmed.StartsWith("-")) return "";
+            if (trimmed.IndexOfAny(new char[] { '"', '\'', '\r', '\n', '\0', '|', '<', '>' }) >= 0) return "";
+            if (trimmed.Contains("..")) return "";
+            try
+            {
+                if (!Path.IsPathRooted(trimmed) || !Directory.Exists(trimmed)) return "";
+                return Path.GetFullPath(trimmed);
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static bool IsSafeHttpUrl(string rawUrl, out string safeAbsoluteUri)
+        {
+            safeAbsoluteUri = "";
+            if (string.IsNullOrWhiteSpace(rawUrl)) return false;
+            string trimmed = rawUrl.Trim();
+            if (trimmed.StartsWith("-")) return false;
+            if (trimmed.IndexOfAny(new char[] { '"', '\r', '\n', '\0' }) >= 0) return false;
+            Uri parsed;
+            if (!Uri.TryCreate(trimmed, UriKind.Absolute, out parsed)) return false;
+            if (parsed.Scheme != Uri.UriSchemeHttp && parsed.Scheme != Uri.UriSchemeHttps) return false;
+            safeAbsoluteUri = parsed.AbsoluteUri;
+            return true;
+        }
+
         private static bool TryExtractProfileFromRawTitle(string rawTitle, out string profileDir, out string userDataDir)
         {
             profileDir = "";
@@ -686,9 +713,9 @@ namespace BlinkNative
             Match m = Regex.Match(rawTitle, @"^[A-Za-z0-9]+_([^_]+)_([A-Za-z]:\|.+)$");
             if (m.Success)
             {
-                profileDir = m.Groups[1].Value.Trim();
-                userDataDir = m.Groups[2].Value.Trim().Replace('|', '\\');
-                return true;
+                profileDir = SanitizeSafeProfileDir(m.Groups[1].Value);
+                userDataDir = SanitizeSafeUserDataDir(m.Groups[2].Value.Trim().Replace('|', '\\'));
+                return !string.IsNullOrEmpty(profileDir) || !string.IsNullOrEmpty(userDataDir);
             }
             return false;
         }
@@ -836,7 +863,8 @@ namespace BlinkNative
 
         private static bool OpenUrlInTargetBrowser(string url, string mode, long explicitHwnd)
         {
-            if (string.IsNullOrWhiteSpace(url)) return false;
+            string safeUrl;
+            if (!IsSafeHttpUrl(url, out safeUrl)) return false;
 
             BrowserInfo target = null;
             bool isExplicitOrManual = false;
@@ -886,7 +914,7 @@ namespace BlinkNative
                 if (mode != "hotkey")
                 {
                     FocusBrowserWindowCleanly(hWnd, isExplicitOrManual);
-                    if (OpenViaNativeBrowserCommandLine(target, url))
+                    if (OpenViaNativeBrowserCommandLine(target, safeUrl))
                     {
                         return true;
                     }
@@ -894,13 +922,13 @@ namespace BlinkNative
 
                 // 2. Fallback / Explicit Hotkey mode ("hotkey"):
                 bool activated = FocusBrowserWindowCleanly(hWnd, true);
-                if (activated && OpenViaWindowNewTabShortcut(hWnd, url))
+                if (activated && OpenViaWindowNewTabShortcut(hWnd, safeUrl))
                 {
                     return true;
                 }
 
                 // 3. Final attempt via native command line
-                if (OpenViaNativeBrowserCommandLine(target, url))
+                if (OpenViaNativeBrowserCommandLine(target, safeUrl))
                 {
                     return true;
                 }
@@ -910,7 +938,7 @@ namespace BlinkNative
             {
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName = url,
+                    FileName = safeUrl,
                     UseShellExecute = true
                 });
                 return false;
@@ -925,6 +953,9 @@ namespace BlinkNative
         {
             try
             {
+                string safeUrl;
+                if (!IsSafeHttpUrl(url, out safeUrl)) return false;
+
                 IntPtr hWnd = new IntPtr(target.Hwnd);
                 string exePath = target.ExePath;
                 string profileDir = target.ProfileDir;
@@ -985,6 +1016,9 @@ namespace BlinkNative
                     }
                 }
 
+                profileDir = SanitizeSafeProfileDir(profileDir);
+                userDataDir = SanitizeSafeUserDataDir(userDataDir);
+
                 target.ProfileDir = profileDir;
                 target.UserDataDir = userDataDir;
 
@@ -997,7 +1031,7 @@ namespace BlinkNative
                 if (isFirefox)
                 {
                     argsList.Add("-new-tab");
-                    argsList.Add("\"" + url.Replace("\"", "%22") + "\"");
+                    argsList.Add("\"" + safeUrl.Replace("\"", "%22") + "\"");
                 }
                 else
                 {
@@ -1010,7 +1044,7 @@ namespace BlinkNative
                         argsList.Add("--user-data-dir=\"" + userDataDir + "\"");
                     }
                     argsList.Add("--new-tab");
-                    argsList.Add("\"" + url.Replace("\"", "%22") + "\"");
+                    argsList.Add("\"" + safeUrl.Replace("\"", "%22") + "\"");
                 }
 
                 string fullArgs = string.Join(" ", argsList.ToArray());

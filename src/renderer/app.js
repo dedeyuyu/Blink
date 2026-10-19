@@ -360,6 +360,11 @@
     return found ? found.hex : '#6366f1';
   }
 
+  function getSafeColorId(colorId) {
+    const found = COLORS.find(c => c.id === colorId);
+    return found ? found.id : 'indigo';
+  }
+
   function renderCategories() {
     const counts = new Map();
     appData.bookmarks.forEach(b => {
@@ -538,7 +543,7 @@
     bookmarkList.innerHTML = filtered.map(bm => {
       const cat = catMap.get(bm.categoryId);
       const catBadgeName = cat ? cat.name : '未分类';
-      const colorClass = `color-${bm.color || 'indigo'}`;
+      const colorClass = `color-${getSafeColorId(bm.color)}`;
       const isChecked = selectedBookmarkIds.has(bm.id);
 
       const titleHtml = highlightText(bm.title, searchQuery);

@@ -1,5 +1,8 @@
 const fs = require('fs');
 
+const MAX_BOOKMARK_FILE_BYTES = 32 * 1024 * 1024; // 32 MB max import file size
+const MAX_LINE_LENGTH = 32768; // Guard against regex backtracking on giant single-line payloads
+
 function decodeHtmlEntities(str) {
   if (!str) return '';
   return String(str)
@@ -25,6 +28,9 @@ function stripTags(html) {
  */
 function parseBookmarkHtml(htmlContent) {
   if (!htmlContent || typeof htmlContent !== 'string') return [];
+  if (htmlContent.length > MAX_BOOKMARK_FILE_BYTES) {
+    throw new Error('书签文件体积过大（超过 32MB 限制）');
+  }
 
   const results = [];
   const folderStack = [];
@@ -41,6 +47,7 @@ function parseBookmarkHtml(htmlContent) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (!line || line.length > MAX_LINE_LENGTH) continue;
 
     // Check for folder opening <H3 ...>Folder Name</H3>
     const h3Match = line.match(/<H3[^>]*>([\s\S]*?)<\/H3>/i);
@@ -67,7 +74,7 @@ function parseBookmarkHtml(htmlContent) {
       const rawHref = hrefMatch ? (hrefMatch[1] || hrefMatch[2] || hrefMatch[3] || '') : '';
       const url = decodeHtmlEntities(rawHref).trim();
 
-      if (url && !/^place:/i.test(url) && !/^javascript:/i.test(url)) {
+      if (url && /^https?:\/\//i.test(url)) {
         // Determine effective category name from folderStack
         const meaningfulFolders = folderStack.filter(f => f && !genericRoots.has(f.toLowerCase()));
         let folderName = '浏览器导入';
@@ -113,6 +120,10 @@ function parseBookmarkHtml(htmlContent) {
 }
 
 function parseBookmarkHtmlFile(filePath) {
+  const stat = fs.statSync(filePath);
+  if (stat.size > MAX_BOOKMARK_FILE_BYTES) {
+    throw new Error('所选书签文件体积超过 32MB 安全上限');
+  }
   const content = fs.readFileSync(filePath, 'utf-8');
   return parseBookmarkHtml(content);
 }
@@ -121,3 +132,4 @@ module.exports = {
   parseBookmarkHtml,
   parseBookmarkHtmlFile
 };
+

@@ -1,8 +1,8 @@
-const { app, BrowserWindow, ipcMain, dialog, screen, shell, clipboard, Tray, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen, shell, Tray, Menu, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, execFileSync } = require('child_process');
-const { StorageManager } = require('./storage');
+const { StorageManager, normalizeSafeHttpUrl } = require('./storage');
 const { parseBookmarkHtml, parseBookmarkHtmlFile } = require('./bookmarkParser');
 
 // Disable Chromium HTTP & disk caches so no bookmark/UI residue is ever written to Chromium disk cache
@@ -45,6 +45,17 @@ function getIconPath() {
 }
 
 function getDataDirectory() {
+  if (app.isPackaged) {
+    try {
+      const portableDataDir = path.join(path.dirname(process.execPath), 'data');
+      if (fs.existsSync(path.join(portableDataDir, 'blink-store.json'))) {
+        return portableDataDir;
+      }
+    } catch {}
+    const userDataDir = path.join(app.getPath('userData'), 'data');
+    fs.mkdirSync(userDataDir, { recursive: true });
+    return userDataDir;
+  }
   try {
     const localDataDir = path.join(app.getAppPath(), 'data');
     fs.mkdirSync(localDataDir, { recursive: true });
@@ -410,9 +421,16 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
       spellcheck: false,
       devTools: false
     }
+  });
+
+  // Security hardening: prevent renderer navigation or popup window creation
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (e) => {
+    e.preventDefault();
   });
 
   if (iconPath) {
@@ -479,6 +497,11 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    if (session && session.defaultSession) {
+      session.defaultSession.setPermissionRequestHandler((_, __, callback) => {
+        callback(false);
+      });
+    }
     purgePlaintextLogsAndCaches();
     storage = new StorageManager(getDataDirectory());
     startBrowserBridge();
@@ -591,10 +614,9 @@ ipcMain.handle('bookmark:open', async (_, { url, explicitHwnd }) => {
   if (!isUnlocked || !storage.isUnlocked()) {
     return { ok: false, error: '书签库已锁定' };
   }
-  if (!url) return { ok: false };
-  let targetUrl = String(url).trim();
-  if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(targetUrl)) {
-    targetUrl = 'https://' + targetUrl;
+  const targetUrl = normalizeSafeHttpUrl(url);
+  if (!targetUrl) {
+    return { ok: false, error: '仅允许打开安全的 http:// 或 https:// 链接' };
   }
 
   const settings = storage.getSettings();
@@ -690,8 +712,9 @@ ipcMain.handle('window:setMode', (_, mode) => {
   return switchWindowMode(mode);
 });
 
-ipcMain.on('window:moveBy', (_, { dx, dy }) => {
+ipcMain.on('window:moveBy', (_, { dx, dy } = {}) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
   const b = mainWindow.getBounds();
   mainWindow.setBounds({
     x: Math.round(b.x + dx),
@@ -707,8 +730,9 @@ ipcMain.handle('window:getPosition', () => {
   return { x, y };
 });
 
-ipcMain.on('window:setPosition', (_, { x, y }) => {
+ipcMain.on('window:setPosition', (_, { x, y } = {}) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
   const b = mainWindow.getBounds();
   mainWindow.setBounds({
     x: Math.round(x),

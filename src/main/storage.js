@@ -2,6 +2,31 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+const ALLOWED_COLORS = new Set(['indigo', 'emerald', 'amber', 'rose', 'violet', 'cyan', 'pink', 'teal']);
+
+function sanitizeColor(color) {
+  const c = String(color || '').trim().toLowerCase();
+  return ALLOWED_COLORS.has(c) ? c : 'indigo';
+}
+
+function normalizeSafeHttpUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  let candidate = rawUrl.trim();
+  if (!candidate) return null;
+  if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(candidate)) {
+    candidate = 'https://' + candidate;
+  }
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
 class StorageManager {
   constructor(dataDir) {
     this.dataDir = dataDir;
@@ -11,6 +36,8 @@ class StorageManager {
     this.filePath = path.join(this.dataDir, 'blink-store.json');
     this.sessionKey = null; // 32-byte Buffer derived from user's password via scrypt (only in RAM while unlocked)
     this.unlockedVault = null; // { categories: [], bookmarks: [] } (only in RAM while unlocked)
+    this.failedAuthAttempts = 0;
+    this.authLockoutUntil = 0;
     this.diskState = this._load();
   }
 
@@ -105,15 +132,19 @@ class StorageManager {
     const iv = crypto.randomBytes(12); // 96-bit IV recommended for AES-256-GCM
     const cipher = crypto.createCipheriv('aes-256-gcm', keyBuffer, iv);
     const plaintext = Buffer.from(JSON.stringify(obj), 'utf8');
-    const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return {
-      v: 2,
-      alg: 'aes-256-gcm',
-      iv: iv.toString('base64'),
-      tag: tag.toString('base64'),
-      data: encrypted.toString('base64')
-    };
+    try {
+      const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+      const tag = cipher.getAuthTag();
+      return {
+        v: 2,
+        alg: 'aes-256-gcm',
+        iv: iv.toString('base64'),
+        tag: tag.toString('base64'),
+        data: encrypted.toString('base64')
+      };
+    } finally {
+      plaintext.fill(0);
+    }
   }
 
   _decryptPayload(envelope, keyBuffer) {
@@ -126,7 +157,11 @@ class StorageManager {
     const decipher = crypto.createDecipheriv('aes-256-gcm', keyBuffer, iv);
     decipher.setAuthTag(tag);
     const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    return JSON.parse(decrypted.toString('utf8'));
+    try {
+      return JSON.parse(decrypted.toString('utf8'));
+    } finally {
+      decrypted.fill(0);
+    }
   }
 
   _load() {
@@ -288,19 +323,34 @@ class StorageManager {
     if (!this.hasPassword()) return { ok: false, error: '尚未初始化密码' };
     if (!password) return { ok: false, error: '请输入密码' };
 
+    const now = Date.now();
+    if (this.authLockoutUntil > now) {
+      const waitSec = Math.ceil((this.authLockoutUntil - now) / 1000);
+      return { ok: false, error: `密码连续错误次数过多，请等待 ${waitSec} 秒后再试` };
+    }
+
+    let derivedKey = null;
     try {
       const auth = this.diskState.auth;
       const expected = Buffer.from(auth.passwordHash, 'hex');
       const actual = Buffer.from(this._hashPassword(password, auth.passwordSalt), 'hex');
       if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) {
+        this.failedAuthAttempts = (this.failedAuthAttempts || 0) + 1;
+        if (this.failedAuthAttempts >= 5) {
+          this.authLockoutUntil = Date.now() + 30 * 1000;
+          return { ok: false, error: '密码连续错误 5 次，已临时锁定 30 秒' };
+        }
         return { ok: false, error: '密码不正确，请重试' };
       }
+
+      this.failedAuthAttempts = 0;
+      this.authLockoutUntil = 0;
 
       if (!auth.encryptionSalt) {
         auth.encryptionSalt = crypto.randomBytes(16).toString('hex');
       }
 
-      const derivedKey = this._deriveEncryptionKey(password, auth.encryptionSalt);
+      derivedKey = this._deriveEncryptionKey(password, auth.encryptionSalt);
 
       if (this.diskState.encryptedVault) {
         this.unlockedVault = this._decryptPayload(this.diskState.encryptedVault, derivedKey);
@@ -308,8 +358,11 @@ class StorageManager {
       } else if (this.diskState.legacySealedVault) {
         // Migrate from transitional sealed vault to pure user-password-derived AES-256-GCM vault
         const transKey = this._deriveTransitionalKey(auth.passwordHash, auth.passwordSalt);
-        this.unlockedVault = this._decryptPayload(this.diskState.legacySealedVault, transKey);
-        transKey.fill(0);
+        try {
+          this.unlockedVault = this._decryptPayload(this.diskState.legacySealedVault, transKey);
+        } finally {
+          transKey.fill(0);
+        }
         this.sessionKey = derivedKey;
         this._save(); // Re-encrypts with derivedKey and removes legacySealedVault permanently
       } else {
@@ -320,6 +373,9 @@ class StorageManager {
 
       return { ok: true };
     } catch (err) {
+      if (derivedKey && Buffer.isBuffer(derivedKey) && this.sessionKey !== derivedKey) {
+        derivedKey.fill(0);
+      }
       console.error('Password verification / vault decryption error:', err);
       return { ok: false, error: '密码或加密库校验失败，请重试' };
     }
@@ -328,7 +384,7 @@ class StorageManager {
   changePassword(oldPassword, newPassword, newHint = '') {
     const check = this.verifyPassword(oldPassword);
     if (!check.ok) {
-      return { ok: false, error: '原密码输入错误' };
+      return { ok: false, error: check.error || '原密码输入错误' };
     }
     if (!newPassword || String(newPassword).length < 1) {
       return { ok: false, error: '新密码不能为空' };
@@ -363,10 +419,45 @@ class StorageManager {
   }
 
   updateSettings(partial) {
-    this.diskState.settings = {
-      ...this.diskState.settings,
-      ...partial
-    };
+    if (!partial || typeof partial !== 'object') {
+      return this.diskState.settings;
+    }
+    const next = { ...this.diskState.settings };
+    if (partial.theme === 'light' || partial.theme === 'dark') {
+      next.theme = partial.theme;
+    }
+    if (typeof partial.alwaysOnTop === 'boolean') {
+      next.alwaysOnTop = partial.alwaysOnTop;
+    }
+    if (typeof partial.autoCollapseOnBlur === 'boolean') {
+      next.autoCollapseOnBlur = partial.autoCollapseOnBlur;
+    }
+    if (typeof partial.keepExpanded === 'boolean') {
+      next.keepExpanded = partial.keepExpanded;
+    }
+    if (partial.openMode === 'auto' || partial.openMode === 'hotkey' || partial.openMode === 'cmdline') {
+      next.openMode = partial.openMode;
+    }
+    if (partial.fontSize === 'normal' || partial.fontSize === 'large') {
+      next.fontSize = partial.fontSize;
+    }
+    if (partial.panelBounds && typeof partial.panelBounds === 'object') {
+      const pb = partial.panelBounds;
+      next.panelBounds = {
+        width: Number.isFinite(pb.width) ? Math.round(pb.width) : 400,
+        height: Number.isFinite(pb.height) ? Math.round(pb.height) : 650,
+        x: Number.isFinite(pb.x) ? Math.round(pb.x) : null,
+        y: Number.isFinite(pb.y) ? Math.round(pb.y) : null
+      };
+    }
+    if (partial.orbPosition && typeof partial.orbPosition === 'object') {
+      const op = partial.orbPosition;
+      next.orbPosition = {
+        x: Number.isFinite(op.x) ? Math.round(op.x) : null,
+        y: Number.isFinite(op.y) ? Math.round(op.y) : null
+      };
+    }
+    this.diskState.settings = next;
     this._writeStateToDisk(this.diskState);
     return this.diskState.settings;
   }
@@ -378,7 +469,7 @@ class StorageManager {
       return { ok: false, error: '分类名称不能为空' };
     }
     const cleanName = String(cat.name).trim();
-    const color = cat.color || 'indigo';
+    const color = sanitizeColor(cat.color);
 
     if (cat.id) {
       const idx = this.unlockedVault.categories.findIndex(c => c.id === cat.id);
@@ -450,14 +541,14 @@ class StorageManager {
       return { ok: false, error: '请输入书签的链接地址' };
     }
 
-    let cleanUrl = String(bm.url).trim();
-    if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(cleanUrl)) {
-      cleanUrl = 'https://' + cleanUrl;
+    const cleanUrl = normalizeSafeHttpUrl(String(bm.url));
+    if (!cleanUrl) {
+      return { ok: false, error: '仅支持有效的 http:// 或 https:// 网页链接' };
     }
 
     const cleanTitle = String(bm.title).trim();
     const cleanNote = String(bm.note || '').trim();
-    const color = bm.color || 'indigo';
+    const color = sanitizeColor(bm.color);
     const categoryId = (bm.categoryId !== undefined && bm.categoryId !== null)
       ? String(bm.categoryId)
       : (this.unlockedVault.categories[0] ? this.unlockedVault.categories[0].id : '');
@@ -573,7 +664,10 @@ class StorageManager {
 
     for (let i = 0; i < parsedItems.length; i++) {
       const item = parsedItems[i];
-      if (!item.url || !item.title) continue;
+      if (!item || !item.url || !item.title) continue;
+
+      const safeUrl = normalizeSafeHttpUrl(String(item.url));
+      if (!safeUrl) continue;
 
       const folderName = (item.folder && String(item.folder).trim()) || options.defaultFolderName || '导入书签';
       let cat = categoryNameMap.get(folderName.toLowerCase());
@@ -597,9 +691,9 @@ class StorageManager {
         id: 'bm_imp_' + now + '_' + i + '_' + Math.random().toString(36).slice(2, 6),
         title: String(item.title).trim(),
         note: item.note ? String(item.note).trim() : '',
-        url: String(item.url).trim(),
+        url: safeUrl,
         categoryId: cat.id,
-        color: cat.color || palette[i % palette.length],
+        color: sanitizeColor(cat.color || palette[i % palette.length]),
         pinned: false,
         order: maxOrder,
         createdAt: now + i
@@ -619,4 +713,5 @@ class StorageManager {
   }
 }
 
-module.exports = { StorageManager };
+module.exports = { StorageManager, normalizeSafeHttpUrl, sanitizeColor };
+
