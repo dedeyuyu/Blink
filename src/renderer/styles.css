@@ -683,16 +683,29 @@ body.theme-light .orb-trigger-btn {
 
 .cat-pill.cat-pill-movable {
   cursor: grab;
+  will-change: transform;
 }
 
-.cat-pill.cat-pill-dragging {
+.cat-pill.cat-pill-placeholder {
+  opacity: 0.28 !important;
+  transform: scale(0.9) !important;
+  border: 1.5px dashed rgba(129, 140, 248, 0.85) !important;
+  background: rgba(99, 102, 241, 0.08) !important;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.35) !important;
+}
+
+body.is-dragging-cat {
   cursor: grabbing !important;
-  opacity: 0.92;
-  transform: scale(1.06) translateY(-1px);
-  border-color: #818cf8 !important;
-  background: rgba(99, 102, 241, 0.32) !important;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.38), 0 0 0 1.5px rgba(129, 140, 248, 0.65);
-  z-index: 20;
+}
+
+body.is-dragging-cat .cat-pill:not(.cat-pill-placeholder):not(.drag-floating-avatar) {
+  transform: translate3d(var(--flip-x, 0px), 0, 0) scale(var(--neighbor-scale, 1));
+  opacity: var(--neighbor-opacity, 1);
+  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s ease, border-color 0.18s ease;
+}
+
+body.is-dragging-cat .cat-pill.cat-neighbor-immediate:not(.cat-pill-placeholder):not(.drag-floating-avatar) {
+  border-color: rgba(129, 140, 248, 0.45);
 }
 
 .cat-dot {
@@ -1047,25 +1060,77 @@ body.theme-light .batch-sort-tip {
   cursor: grabbing;
 }
 
-.bookmark-card.dragging,
-.bookmark-card.bm-card-dragging {
-  opacity: 0.94;
-  transform: scale(1.02);
-  border-color: #818cf8 !important;
-  background: rgba(99, 102, 241, 0.24) !important;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45), 0 0 0 1.5px rgba(129, 140, 248, 0.65);
-  z-index: 30;
-  cursor: grabbing !important;
-}
-
 .bookmark-card.organize-mode {
   cursor: grab;
   border-style: dashed;
   border-color: rgba(129, 140, 248, 0.35);
+  will-change: transform;
 }
 
 .bookmark-card.organize-mode:active {
   cursor: grabbing;
+}
+
+.bookmark-card.bm-card-placeholder {
+  opacity: 0.25 !important;
+  transform: scale(0.94) !important;
+  border: 2px dashed rgba(129, 140, 248, 0.85) !important;
+  background: rgba(99, 102, 241, 0.07) !important;
+  box-shadow: inset 0 3px 12px rgba(0, 0, 0, 0.38) !important;
+}
+
+body.is-dragging-bm {
+  cursor: grabbing !important;
+}
+
+body.is-dragging-bm .bookmark-card:not(.bm-card-placeholder):not(.drag-floating-avatar) {
+  transform: translate3d(0, var(--flip-y, 0px), 0) scale(var(--neighbor-scale, 1));
+  opacity: var(--neighbor-opacity, 1);
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+body.is-dragging-bm .bookmark-card.bm-neighbor-immediate:not(.bm-card-placeholder):not(.drag-floating-avatar) {
+  border-color: rgba(129, 140, 248, 0.48) !important;
+  background: rgba(30, 35, 58, 0.55);
+}
+
+body.theme-light.is-dragging-bm .bookmark-card.bm-neighbor-immediate:not(.bm-card-placeholder):not(.drag-floating-avatar) {
+  background: rgba(238, 242, 255, 0.78);
+}
+
+/* Floating Lifted Drag Avatar (跟随鼠标放大悬浮 + 物理微倾角) */
+.drag-floating-avatar {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  margin: 0 !important;
+  pointer-events: none !important;
+  z-index: 9999 !important;
+  will-change: transform;
+  transform-origin: center center;
+}
+
+.drag-floating-avatar.bm-avatar {
+  border-style: solid !important;
+  border-color: #a5b4fc !important;
+  background: var(--bg-elevated) !important;
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.65),
+              0 0 24px rgba(99, 102, 241, 0.45),
+              0 0 0 1.5px rgba(165, 180, 252, 0.78) !important;
+}
+
+.drag-floating-avatar .bm-actions {
+  opacity: 0 !important;
+}
+
+.drag-floating-avatar.cat-avatar {
+  border-style: solid !important;
+  border-color: #818cf8 !important;
+  background: var(--bg-elevated) !important;
+  color: var(--text-primary) !important;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45),
+              0 0 18px rgba(99, 102, 241, 0.48),
+              0 0 0 1.5px rgba(129, 140, 248, 0.85) !important;
 }
 
 .bookmark-card.drag-over-top {

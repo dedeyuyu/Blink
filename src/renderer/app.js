@@ -1079,21 +1079,69 @@
     });
   }
 
-  // ==================== POINTER DRAG SORTING (分类左右拖动 & 整理模式书签上下拖动) ====================
+  // ==================== PHYSICS-BASED POINTER DRAG SORTING ====================
+  // 包含：1. 悬浮放大跟随卡片 (Magnified Floating Avatar + 惯性微倾角)
+  //       2. 临近上下/左右元素自动缩小退让 (Proximity Neighbor Scale-Down)
+  //       3. FLIP 丝滑换位过渡动画 (First-Last-Invert-Play Smooth Swap)
+  //       4. 松手磁吸回落动画 (Magnetic Snap-to-Slot Landing)
+  function clearBookmarkNeighborEffects() {
+    bookmarkList.querySelectorAll('.bookmark-card').forEach(c => {
+      c.style.removeProperty('--neighbor-scale');
+      c.style.removeProperty('--neighbor-opacity');
+      c.style.removeProperty('--flip-y');
+      c.classList.remove('bm-neighbor-immediate');
+    });
+  }
+
+  function clearCategoryNeighborEffects() {
+    categoryTabs.querySelectorAll('.cat-pill').forEach(p => {
+      p.style.removeProperty('--neighbor-scale');
+      p.style.removeProperty('--neighbor-opacity');
+      p.style.removeProperty('--flip-x');
+      p.classList.remove('cat-neighbor-immediate');
+    });
+  }
+
   function setupPointerDragSorting() {
     window.addEventListener('mousemove', (e) => {
-      // 1. Horizontal Category Reordering (随时可左右拖动分类)
+      // 1. Horizontal Category Reordering (随时可左右拖动分类 · 悬浮放大 + 左右邻近分类缩小退让 + FLIP 丝滑换位)
       if (catDragState && catDragState.pill) {
         const dx = Math.abs(e.clientX - catDragState.startX);
-        if (!catDragState.active && dx > 5) {
+        if (!catDragState.active && dx > 4) {
           catDragState.active = true;
-          catDragState.pill.classList.add('cat-pill-dragging');
+          const rect = catDragState.pill.getBoundingClientRect();
+          catDragState.offsetX = catDragState.startX - rect.left;
+          catDragState.offsetY = catDragState.startY - rect.top;
+          catDragState.lastX = e.clientX;
+          catDragState.tilt = 0;
+          catDragState.lastSwapTime = 0;
+
+          const avatar = catDragState.pill.cloneNode(true);
+          avatar.classList.add('drag-floating-avatar', 'cat-avatar');
+          avatar.style.width = `${rect.width}px`;
+          avatar.style.height = `${rect.height}px`;
+          document.body.appendChild(avatar);
+          catDragState.avatar = avatar;
+
+          catDragState.pill.classList.add('cat-pill-placeholder');
+          document.body.classList.add('is-dragging-cat');
         }
+
         if (catDragState.active) {
+          // Update magnified floating category pill position & velocity tilt
+          const vx = e.clientX - (catDragState.lastX ?? e.clientX);
+          catDragState.lastX = e.clientX;
+          catDragState.tilt = (catDragState.tilt || 0) * 0.65 + Math.max(-4, Math.min(4, vx * 0.25)) * 0.35;
+          const ax = e.clientX - catDragState.offsetX;
+          const ay = e.clientY - catDragState.offsetY;
+          if (catDragState.avatar) {
+            catDragState.avatar.style.transform = `translate3d(${ax}px, ${ay}px, 0) scale(1.13) rotate(${catDragState.tilt.toFixed(2)}deg)`;
+          }
+
           const barRect = categoryTabs.getBoundingClientRect();
-          if (e.clientX < barRect.left + 32) {
+          if (e.clientX < barRect.left + 36) {
             categoryTabs.scrollLeft -= 8;
-          } else if (e.clientX > barRect.right - 32) {
+          } else if (e.clientX > barRect.right - 36) {
             categoryTabs.scrollLeft += 8;
           }
 
@@ -1101,82 +1149,212 @@
             el => el.getAttribute('data-cat-id') !== 'ALL'
           );
           const myIdx = movablePills.indexOf(catDragState.pill);
-          if (myIdx !== -1) {
+          const now = Date.now();
+
+          if (myIdx !== -1 && now - (catDragState.lastSwapTime || 0) > 65) {
             for (let i = 0; i < movablePills.length; i++) {
               const sib = movablePills[i];
               if (sib === catDragState.pill) continue;
               const rect = sib.getBoundingClientRect();
               const midX = rect.left + rect.width / 2;
-              if (myIdx < i && e.clientX > midX) {
-                sib.after(catDragState.pill);
-                break;
-              } else if (myIdx > i && e.clientX < midX) {
-                sib.before(catDragState.pill);
+              if ((myIdx < i && e.clientX > midX) || (myIdx > i && e.clientX < midX)) {
+                // FLIP First: record old left positions
+                const prevLefts = new Map();
+                movablePills.forEach(p => {
+                  if (p !== catDragState.pill) prevLefts.set(p, p.getBoundingClientRect().left);
+                });
+
+                // FLIP Last: swap in DOM
+                if (myIdx < i) {
+                  sib.after(catDragState.pill);
+                } else {
+                  sib.before(catDragState.pill);
+                }
+
+                // FLIP Invert & Play
+                prevLefts.forEach((oldLeft, p) => {
+                  const newLeft = p.getBoundingClientRect().left;
+                  const deltaX = oldLeft - newLeft;
+                  if (Math.abs(deltaX) > 1) {
+                    p.style.transition = 'none';
+                    p.style.setProperty('--flip-x', `${deltaX}px`);
+                    void p.offsetWidth;
+                    p.style.transition = '';
+                    p.style.setProperty('--flip-x', '0px');
+                  }
+                });
+
+                catDragState.lastSwapTime = now;
                 break;
               }
             }
           }
+
+          // Proximity scale-down on adjacent left/right category pills
+          const updatedPills = Array.from(categoryTabs.querySelectorAll('.cat-pill')).filter(
+            el => el.getAttribute('data-cat-id') !== 'ALL'
+          );
+          const slotIdx = updatedPills.indexOf(catDragState.pill);
+          updatedPills.forEach((p, idx) => {
+            if (p === catDragState.pill) return;
+            const diff = Math.abs(idx - slotIdx);
+            if (diff === 1) {
+              p.style.setProperty('--neighbor-scale', '0.91');
+              p.style.setProperty('--neighbor-opacity', '0.82');
+              p.classList.add('cat-neighbor-immediate');
+            } else if (diff === 2) {
+              p.style.setProperty('--neighbor-scale', '0.96');
+              p.style.setProperty('--neighbor-opacity', '0.92');
+              p.classList.remove('cat-neighbor-immediate');
+            } else {
+              p.style.setProperty('--neighbor-scale', '1');
+              p.style.setProperty('--neighbor-opacity', '1');
+              p.classList.remove('cat-neighbor-immediate');
+            }
+          });
         }
         return;
       }
 
-      // 2. Vertical Bookmark Reordering (仅在开启「整理」后可上下拖动排序或拖入分类夹)
+      // 2. Vertical Bookmark Reordering (开启「整理」后：拖拽项放大悬浮 + 临近上下书签自动缩小退让 + FLIP 丝滑换位)
       if (bmDragState && bmDragState.card && batchMode) {
         const dist = Math.hypot(e.clientX - bmDragState.startX, e.clientY - bmDragState.startY);
         if (!bmDragState.active && dist > 4) {
           bmDragState.active = true;
-          bmDragState.card.classList.add('bm-card-dragging');
+          const rect = bmDragState.card.getBoundingClientRect();
+          bmDragState.offsetX = bmDragState.startX - rect.left;
+          bmDragState.offsetY = bmDragState.startY - rect.top;
+          bmDragState.lastY = e.clientY;
+          bmDragState.tilt = 0;
+          bmDragState.lastSwapTime = 0;
+
+          const avatar = bmDragState.card.cloneNode(true);
+          avatar.classList.add('drag-floating-avatar', 'bm-avatar');
+          avatar.style.width = `${rect.width}px`;
+          avatar.style.height = `${rect.height}px`;
+          document.body.appendChild(avatar);
+          bmDragState.avatar = avatar;
+
+          bmDragState.card.classList.add('bm-card-placeholder');
+          document.body.classList.add('is-dragging-bm');
         }
+
         if (bmDragState.active) {
           // Check if pointer is hovering over a category pill at the top
           categoryTabs.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('cat-drop-target'));
           const elUnder = document.elementFromPoint(e.clientX, e.clientY);
           const hoveredPill = elUnder ? elUnder.closest('.cat-pill') : null;
+
+          // Update floating magnified card position & physical velocity tilt
+          const vy = e.clientY - (bmDragState.lastY ?? e.clientY);
+          bmDragState.lastY = e.clientY;
+          bmDragState.tilt = (bmDragState.tilt || 0) * 0.65 + Math.max(-2.8, Math.min(2.8, vy * 0.2)) * 0.35;
+          const ax = e.clientX - bmDragState.offsetX;
+          const ay = e.clientY - bmDragState.offsetY;
+          const avatarScale = hoveredPill ? 0.92 : 1.068;
+          if (bmDragState.avatar) {
+            bmDragState.avatar.style.transform = `translate3d(${ax}px, ${ay}px, 0) scale(${avatarScale}) rotate(${bmDragState.tilt.toFixed(2)}deg)`;
+          }
+
           if (hoveredPill) {
             hoveredPill.classList.add('cat-drop-target');
             bmDragState.hoveredCatPill = hoveredPill;
+            clearBookmarkNeighborEffects();
             return;
           }
           bmDragState.hoveredCatPill = null;
 
           // Auto-scroll bookmarkList when dragging near top or bottom edges
           const listRect = bookmarkList.getBoundingClientRect();
-          if (e.clientY < listRect.top + 42) {
+          if (e.clientY < listRect.top + 46) {
             bookmarkList.scrollTop -= 10;
-          } else if (e.clientY > listRect.bottom - 42) {
+          } else if (e.clientY > listRect.bottom - 46) {
             bookmarkList.scrollTop += 10;
           }
 
           const cards = Array.from(bookmarkList.querySelectorAll('.bookmark-card'));
           const myIdx = cards.indexOf(bmDragState.card);
-          if (myIdx !== -1) {
+          const now = Date.now();
+
+          if (myIdx !== -1 && now - (bmDragState.lastSwapTime || 0) > 65) {
             for (let i = 0; i < cards.length; i++) {
               const sib = cards[i];
               if (sib === bmDragState.card) continue;
               const rect = sib.getBoundingClientRect();
               const midY = rect.top + rect.height / 2;
-              if (myIdx < i && e.clientY > midY) {
-                sib.after(bmDragState.card);
-                break;
-              } else if (myIdx > i && e.clientY < midY) {
-                sib.before(bmDragState.card);
+              if ((myIdx < i && e.clientY > midY) || (myIdx > i && e.clientY < midY)) {
+                // FLIP First: record old top positions of all sibling cards
+                const prevTops = new Map();
+                cards.forEach(c => {
+                  if (c !== bmDragState.card) prevTops.set(c, c.getBoundingClientRect().top);
+                });
+
+                // FLIP Last: move placeholder in DOM
+                if (myIdx < i) {
+                  sib.after(bmDragState.card);
+                } else {
+                  sib.before(bmDragState.card);
+                }
+
+                // FLIP Invert & Play: smoothly glide swapped siblings
+                prevTops.forEach((oldTop, c) => {
+                  const newTop = c.getBoundingClientRect().top;
+                  const deltaY = oldTop - newTop;
+                  if (Math.abs(deltaY) > 1) {
+                    c.style.transition = 'none';
+                    c.style.setProperty('--flip-y', `${deltaY}px`);
+                    void c.offsetHeight;
+                    c.style.transition = '';
+                    c.style.setProperty('--flip-y', '0px');
+                  }
+                });
+
+                bmDragState.lastSwapTime = now;
                 break;
               }
             }
           }
+
+          // Proximity Neighbor Scale-Down (临近的上下书签卡片自动缩小退让)
+          const updatedCards = Array.from(bookmarkList.querySelectorAll('.bookmark-card'));
+          const slotIdx = updatedCards.indexOf(bmDragState.card);
+          updatedCards.forEach((c, idx) => {
+            if (c === bmDragState.card) return;
+            const cRect = c.getBoundingClientRect();
+            const cCenterY = cRect.top + cRect.height / 2;
+            const distY = Math.abs(e.clientY - cCenterY);
+            const idxDiff = Math.abs(idx - slotIdx);
+
+            if (idxDiff === 1) {
+              // Immediate upper & lower neighbors shrink noticeably to yield space
+              const proximityBoost = Math.max(0, 1 - distY / 110) * 0.022;
+              const scaleVal = (0.942 - proximityBoost).toFixed(3);
+              c.style.setProperty('--neighbor-scale', scaleVal);
+              c.style.setProperty('--neighbor-opacity', '0.82');
+              c.classList.add('bm-neighbor-immediate');
+            } else if (idxDiff === 2) {
+              c.style.setProperty('--neighbor-scale', '0.974');
+              c.style.setProperty('--neighbor-opacity', '0.92');
+              c.classList.remove('bm-neighbor-immediate');
+            } else {
+              c.style.setProperty('--neighbor-scale', '1');
+              c.style.setProperty('--neighbor-opacity', '1');
+              c.classList.remove('bm-neighbor-immediate');
+            }
+          });
         }
       }
     });
 
     window.addEventListener('mouseup', async () => {
-      // Finish Category Drag
+      // Finish Category Drag with smooth magnetic snap-to-slot landing
       if (catDragState) {
         const state = catDragState;
         catDragState = null;
         if (state.active && state.pill) {
-          state.pill.classList.remove('cat-pill-dragging');
           suppressNextCatClick = true;
-          setTimeout(() => { suppressNextCatClick = false; }, 100);
+          setTimeout(() => { suppressNextCatClick = false; }, 140);
+          clearCategoryNeighborEffects();
 
           const newOrderedIds = Array.from(categoryTabs.querySelectorAll('.cat-pill'))
             .map(el => el.getAttribute('data-cat-id'))
@@ -1184,6 +1362,17 @@
 
           const changed = newOrderedIds.length === state.initialOrder.length &&
             newOrderedIds.some((id, idx) => id !== state.initialOrder[idx]);
+
+          if (state.avatar) {
+            const targetRect = state.pill.getBoundingClientRect();
+            state.avatar.style.transition = 'transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s ease';
+            state.avatar.style.transform = `translate3d(${targetRect.left}px, ${targetRect.top}px, 0) scale(1) rotate(0deg)`;
+            await new Promise(r => setTimeout(r, 175));
+            state.avatar.remove();
+          }
+
+          state.pill.classList.remove('cat-pill-placeholder');
+          document.body.classList.remove('is-dragging-cat');
 
           if (changed) {
             const res = await window.blinkAPI.reorderCategories(newOrderedIds);
@@ -1196,17 +1385,28 @@
         }
       }
 
-      // Finish Bookmark Drag
+      // Finish Bookmark Drag with smooth magnetic snap-to-slot landing
       if (bmDragState) {
         const state = bmDragState;
         bmDragState = null;
         if (state.active && state.card) {
-          state.card.classList.remove('bm-card-dragging');
-          categoryTabs.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('cat-drop-target'));
           suppressNextBmClick = true;
-          setTimeout(() => { suppressNextBmClick = false; }, 100);
+          setTimeout(() => { suppressNextBmClick = false; }, 140);
+          categoryTabs.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('cat-drop-target'));
+          clearBookmarkNeighborEffects();
 
           if (state.hoveredCatPill) {
+            if (state.avatar) {
+              const pillRect = state.hoveredCatPill.getBoundingClientRect();
+              state.avatar.style.transition = 'transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s ease';
+              state.avatar.style.transform = `translate3d(${pillRect.left}px, ${pillRect.top}px, 0) scale(0.35)`;
+              state.avatar.style.opacity = '0';
+              await new Promise(r => setTimeout(r, 175));
+              state.avatar.remove();
+            }
+            state.card.classList.remove('bm-card-placeholder');
+            document.body.classList.remove('is-dragging-bm');
+
             const targetCatId = state.hoveredCatPill.getAttribute('data-cat-id');
             const targetCatParam = targetCatId === 'ALL' ? 'UNCATEGORIZED' : targetCatId;
             const res = await window.blinkAPI.reorderBookmarks(state.bmId, null, targetCatParam);
@@ -1227,6 +1427,17 @@
 
             const changed = newOrderedIds.length === state.initialOrder.length &&
               newOrderedIds.some((id, idx) => id !== state.initialOrder[idx]);
+
+            if (state.avatar) {
+              const slotRect = state.card.getBoundingClientRect();
+              state.avatar.style.transition = 'transform 0.19s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.19s ease';
+              state.avatar.style.transform = `translate3d(${slotRect.left}px, ${slotRect.top}px, 0) scale(1) rotate(0deg)`;
+              await new Promise(r => setTimeout(r, 185));
+              state.avatar.remove();
+            }
+
+            state.card.classList.remove('bm-card-placeholder');
+            document.body.classList.remove('is-dragging-bm');
 
             if (changed) {
               const res = await window.blinkAPI.reorderBookmarks(state.bmId, newOrderedIds, null);
