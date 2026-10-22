@@ -39,6 +39,13 @@
   let draggedBookmarkId = null;
   let pendingDeleteCatId = null;
 
+  let currentAppVersion = '1.0.1';
+  let latestUpdateInfo = null;
+  let suppressNextCatClick = false;
+  let suppressNextBmClick = false;
+  let catDragState = null;
+  let bmDragState = null;
+
   let currentBrowserTarget = {
     hasTarget: false,
     hwnd: '',
@@ -58,6 +65,7 @@
   const btnLockNow = document.getElementById('btnLockNow');
   const btnOpenSettings = document.getElementById('btnOpenSettings');
   const btnCloseApp = document.getElementById('btnCloseApp');
+  const btnVersionBadge = document.getElementById('btnVersionBadge');
 
   // Auth DOM
   const authOverlay = document.getElementById('authOverlay');
@@ -137,6 +145,15 @@
   const btnRefreshBrowsers = document.getElementById('btnRefreshBrowsers');
 
   const settingsModal = document.getElementById('settingsModal');
+  const settingsCurrentVer = document.getElementById('settingsCurrentVer');
+  const btnCheckUpdate = document.getElementById('btnCheckUpdate');
+  const updateStatusBox = document.getElementById('updateStatusBox');
+  const updateStatusText = document.getElementById('updateStatusText');
+  const updateNotesBox = document.getElementById('updateNotesBox');
+  const updateProgressWrap = document.getElementById('updateProgressWrap');
+  const updateProgressBar = document.getElementById('updateProgressBar');
+  const updateProgressText = document.getElementById('updateProgressText');
+  const btnPerformUpdate = document.getElementById('btnPerformUpdate');
   const importDefaultFolderInput = document.getElementById('importDefaultFolderInput');
   const btnSettingsImportFile = document.getElementById('btnSettingsImportFile');
   const setAlwaysOnTop = document.getElementById('setAlwaysOnTop');
@@ -158,11 +175,18 @@
     renderColorPickers();
     renderColorFilterBar();
 
-    const [authStatus, fullData, targetInfo] = await Promise.all([
+    const [authStatus, fullData, targetInfo, versionInfo] = await Promise.all([
       window.blinkAPI.getAuthStatus(),
       window.blinkAPI.getAllData(),
-      window.blinkAPI.getBrowserTarget()
+      window.blinkAPI.getBrowserTarget(),
+      window.blinkAPI.getAppVersion ? window.blinkAPI.getAppVersion() : Promise.resolve({ version: '1.0.1' })
     ]);
+
+    if (versionInfo && versionInfo.version) {
+      currentAppVersion = versionInfo.version;
+      if (btnVersionBadge) btnVersionBadge.textContent = `v${currentAppVersion}`;
+      if (settingsCurrentVer) settingsCurrentVer.textContent = `v${currentAppVersion}`;
+    }
 
     appData = fullData;
     isUnlocked = Boolean(authStatus.isUnlocked);
@@ -171,6 +195,7 @@
     updateAuthScreen(authStatus);
     if (isUnlocked) {
       renderAll();
+      setTimeout(() => handleCheckUpdate(true), 2500);
     } else {
       purgeRendererVaultMemory();
     }
@@ -201,6 +226,22 @@
         purgeRendererVaultMemory();
         updateAuthScreen(appData.auth);
         showToast('🔒 书签库已上锁，内存缓存已擦除');
+      });
+    }
+
+    if (window.blinkAPI.onUpdateProgress) {
+      window.blinkAPI.onUpdateProgress((prog) => {
+        if (!prog || !updateProgressWrap) return;
+        updateProgressWrap.classList.remove('hidden');
+        const pct = Math.max(0, Math.min(100, Number(prog.percent) || 0));
+        if (updateProgressBar) updateProgressBar.style.width = `${pct}%`;
+        if (updateProgressText) {
+          if (prog.stage === 'installing') {
+            updateProgressText.textContent = '✅ 下载完成，正在备份书签并启动安装程序，即将自动重启...';
+          } else {
+            updateProgressText.textContent = `正在下载新版本安装包... ${pct}% (${prog.downloadedMb || 0} MB / ${prog.totalMb || '...'} MB)`;
+          }
+        }
       });
     }
   }
@@ -294,6 +335,7 @@
       updateAuthScreen(appData.auth);
       renderAll();
       showToast('🔓 密码设置成功，欢迎使用 Blink！');
+      setTimeout(() => handleCheckUpdate(true), 2500);
     } else {
       const res = await window.blinkAPI.verifyPassword(pwd);
       if (!res.ok) {
@@ -305,6 +347,7 @@
       appData = await window.blinkAPI.getAllData();
       updateAuthScreen(appData.auth);
       renderAll();
+      setTimeout(() => handleCheckUpdate(true), 2500);
     }
   }
 
@@ -383,7 +426,7 @@
       const isActive = activeCategoryId === cat.id;
       const hex = getColorHex(cat.color);
       html += `
-        <button class="cat-pill ${isActive ? 'active' : ''}" data-cat-id="${escapeHtml(cat.id)}" title="左键切换分类 · 点击 × 或右键可删除该分类夹">
+        <button class="cat-pill cat-pill-movable ${isActive ? 'active' : ''}" data-cat-id="${escapeHtml(cat.id)}" title="左键切换分类 · 按住可左右拖动调整分类顺序 · 右键或点 × 删除分类">
           <span class="cat-dot" style="background:${hex};box-shadow:0 0 6px ${hex}"></span>
           <span>${escapeHtml(cat.name)}</span>
           <span class="cat-count">${cnt}</span>
@@ -396,6 +439,7 @@
 
     // Bind inline × delete buttons on category pills
     categoryTabs.querySelectorAll('.cat-pill-del').forEach(delBtn => {
+      delBtn.addEventListener('mousedown', (e) => e.stopPropagation());
       delBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const delId = delBtn.getAttribute('data-del-cat-id');
@@ -405,10 +449,15 @@
       });
     });
 
-    // Bind click, right-click, and drag-drop onto category pills (for quick cross-category归类)
+    // Bind click, right-click, and horizontal pointer drag-reorder on category pills (随时可左右拖动排序)
     categoryTabs.querySelectorAll('.cat-pill').forEach(pill => {
       const catId = pill.getAttribute('data-cat-id');
-      pill.addEventListener('click', () => {
+      pill.addEventListener('click', (e) => {
+        if (suppressNextCatClick) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         activeCategoryId = catId;
         renderAll();
       });
@@ -418,33 +467,23 @@
           e.preventDefault();
           promptDeleteCategory(catId);
         });
-      }
 
-      pill.addEventListener('dragover', (e) => {
-        if (!draggedBookmarkId) return;
-        e.preventDefault();
-        pill.classList.add('cat-drop-target');
-      });
-      pill.addEventListener('dragleave', () => {
-        pill.classList.remove('cat-drop-target');
-      });
-      pill.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        pill.classList.remove('cat-drop-target');
-        if (!draggedBookmarkId) return;
-        const targetCatParam = catId === 'ALL' ? 'UNCATEGORIZED' : catId;
-        const res = await window.blinkAPI.reorderBookmarks(draggedBookmarkId, null, targetCatParam);
-        if (res.ok) {
-          appData = res.data;
-          renderAll();
-          if (catId === 'ALL') {
-            showToast('📁 已设为未分类（保存在「全部」中）');
-          } else {
-            const targetCat = appData.categories.find(c => c.id === catId);
-            showToast(`📁 已归类至「${targetCat ? targetCat.name : '新分类'}」`);
-          }
-        }
-      });
+        pill.addEventListener('mousedown', (e) => {
+          if (e.button !== 0 || e.target.closest('.cat-pill-del')) return;
+          const initialOrder = Array.from(categoryTabs.querySelectorAll('.cat-pill'))
+            .map(el => el.getAttribute('data-cat-id'))
+            .filter(id => id && id !== 'ALL');
+
+          catDragState = {
+            pill,
+            catId,
+            startX: e.clientX,
+            startY: e.clientY,
+            active: false,
+            initialOrder
+          };
+        });
+      }
     });
 
     // Also update category select dropdowns
@@ -550,21 +589,20 @@
       const noteHtml = bm.note ? highlightText(bm.note, searchQuery) : '';
 
       return `
-        <div class="bookmark-card ${colorClass}"
-             draggable="true"
-             data-bm-id="${escapeHtml(bm.id)}">
+        <div class="bookmark-card ${colorClass} ${batchMode ? 'organize-mode' : ''}"
+             data-bm-id="${escapeHtml(bm.id)}"
+             title="${batchMode ? '整理模式：按住卡片可上下拖动排序，或拖到上方分类夹归类' : '点击在目标浏览器中打开此书签'}">
 
           ${batchMode ? `
-            <input type="checkbox" class="bm-batch-check toggle-checkbox" data-id="${escapeHtml(bm.id)}" ${isChecked ? 'checked' : ''} />
-          ` : `
-            <div class="drag-handle" title="按住上下拖动排序，或拖到上方分类夹归类">
+            <div class="drag-handle" title="按住上下拖动调整顺序，或拖到上方分类夹归类">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                 <circle cx="9" cy="6" r="1.8"/><circle cx="15" cy="6" r="1.8"/>
                 <circle cx="9" cy="12" r="1.8"/><circle cx="15" cy="12" r="1.8"/>
                 <circle cx="9" cy="18" r="1.8"/><circle cx="15" cy="18" r="1.8"/>
               </svg>
             </div>
-          `}
+            <input type="checkbox" class="bm-batch-check toggle-checkbox" data-id="${escapeHtml(bm.id)}" ${isChecked ? 'checked' : ''} title="勾选以批量移动或删除" />
+          ` : ''}
 
           <div class="bm-content">
             <div class="bm-title-row">
@@ -612,8 +650,13 @@
       const bm = appData.bookmarks.find(b => b.id === bmId);
       if (!bm) return;
 
-      // Click on card opens link in last active browser window (or toggles checkbox in batch mode)
+      // Click on card opens link ONLY when NOT in organize (batchMode) mode
       card.addEventListener('click', async (e) => {
+        if (suppressNextBmClick) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
         if (e.target.closest('.bm-actions') || e.target.closest('.drag-handle')) {
           return;
         }
@@ -634,6 +677,7 @@
       // Batch checkbox change
       const chk = card.querySelector('.bm-batch-check');
       if (chk) {
+        chk.addEventListener('mousedown', (e) => e.stopPropagation());
         chk.addEventListener('change', () => {
           toggleBatchSelection(bmId, chk.checked);
         });
@@ -642,6 +686,7 @@
       // Move to top button
       const btnTop = card.querySelector('.act-top');
       if (btnTop) {
+        btnTop.addEventListener('mousedown', (e) => e.stopPropagation());
         btnTop.addEventListener('click', async (e) => {
           e.stopPropagation();
           const res = await window.blinkAPI.moveBookmarkToTop(bmId);
@@ -656,6 +701,7 @@
       // Edit button
       const btnEdit = card.querySelector('.act-edit');
       if (btnEdit) {
+        btnEdit.addEventListener('mousedown', (e) => e.stopPropagation());
         btnEdit.addEventListener('click', (e) => {
           e.stopPropagation();
           openBookmarkModal(bm);
@@ -665,6 +711,7 @@
       // Delete button
       const btnDel = card.querySelector('.act-del');
       if (btnDel) {
+        btnDel.addEventListener('mousedown', (e) => e.stopPropagation());
         btnDel.addEventListener('click', async (e) => {
           e.stopPropagation();
           const res = await window.blinkAPI.deleteBookmarks([bmId]);
@@ -676,65 +723,27 @@
         });
       }
 
-      // Drag and drop sorting
-      card.addEventListener('dragstart', (e) => {
-        draggedBookmarkId = bmId;
-        card.classList.add('dragging');
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', bmId);
-      });
-
-      card.addEventListener('dragend', () => {
-        draggedBookmarkId = null;
-        card.classList.remove('dragging');
-        bookmarkList.querySelectorAll('.bookmark-card').forEach(c => {
-          c.classList.remove('drag-over-top', 'drag-over-bottom');
-        });
-      });
-
-      card.addEventListener('dragover', (e) => {
-        if (!draggedBookmarkId || draggedBookmarkId === bmId) return;
-        e.preventDefault();
-        const rect = card.getBoundingClientRect();
-        const midY = rect.top + rect.height / 2;
-        if (e.clientY < midY) {
-          card.classList.add('drag-over-top');
-          card.classList.remove('drag-over-bottom');
-        } else {
-          card.classList.add('drag-over-bottom');
-          card.classList.remove('drag-over-top');
+      // Pointer-based up/down drag sorting (ONLY enabled when user turns on "整理" mode)
+      card.addEventListener('mousedown', (e) => {
+        if (!batchMode) return;
+        if (e.button !== 0) return;
+        if (e.target.closest('.bm-actions') || e.target.classList.contains('bm-batch-check')) {
+          return;
         }
-      });
 
-      card.addEventListener('dragleave', () => {
-        card.classList.remove('drag-over-top', 'drag-over-bottom');
-      });
+        const initialOrder = Array.from(bookmarkList.querySelectorAll('.bookmark-card'))
+          .map(el => el.getAttribute('data-bm-id'))
+          .filter(Boolean);
 
-      card.addEventListener('drop', async (e) => {
-        e.preventDefault();
-        const placeBefore = card.classList.contains('drag-over-top');
-        card.classList.remove('drag-over-top', 'drag-over-bottom');
-
-        if (!draggedBookmarkId || draggedBookmarkId === bmId) return;
-
-        // Compute new global order
-        const currentOrdered = [...appData.bookmarks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-        const fromIdx = currentOrdered.findIndex(b => b.id === draggedBookmarkId);
-        if (fromIdx === -1) return;
-        const [movedItem] = currentOrdered.splice(fromIdx, 1);
-
-        let toIdx = currentOrdered.findIndex(b => b.id === bmId);
-        if (!placeBefore) toIdx += 1;
-        currentOrdered.splice(toIdx, 0, movedItem);
-
-        const newOrderedIds = currentOrdered.map(b => b.id);
-        const newCatId = (activeCategoryId !== 'ALL') ? activeCategoryId : bm.categoryId;
-
-        const res = await window.blinkAPI.reorderBookmarks(draggedBookmarkId, newOrderedIds, newCatId);
-        if (res.ok) {
-          appData = res.data;
-          renderAll();
-        }
+        bmDragState = {
+          card,
+          bmId,
+          startX: e.clientX,
+          startY: e.clientY,
+          active: false,
+          hoveredCatPill: null,
+          initialOrder
+        };
       });
     });
   }
@@ -745,6 +754,7 @@
     selectedBookmarkIds.clear();
     batchSelectAll.checked = false;
     btnToggleBatch.classList.toggle('active', batchMode);
+    btnToggleBatch.textContent = batchMode ? '✓ 完成整理' : '⇅ 整理';
     batchActionBar.classList.toggle('hidden', !batchMode);
     updateBatchCountLabel();
     renderBookmarks();
@@ -859,7 +869,7 @@
       counts.set(b.categoryId, (counts.get(b.categoryId) || 0) + 1);
     });
 
-    categoryManageList.innerHTML = appData.categories.map(cat => {
+    categoryManageList.innerHTML = appData.categories.map((cat, idx) => {
       const hex = getColorHex(cat.color);
       const cnt = counts.get(cat.id) || 0;
       return `
@@ -870,12 +880,41 @@
             <span class="cat-count">(${cnt} 个书签)</span>
           </div>
           <div class="cat-manage-actions">
+            <button type="button" class="cat-manage-btn cat-move-up" data-idx="${idx}" title="左移/上移分类" ${idx === 0 ? 'disabled style="opacity:0.35;cursor:default"' : ''}>↑</button>
+            <button type="button" class="cat-manage-btn cat-move-down" data-idx="${idx}" title="右移/下移分类" ${idx === appData.categories.length - 1 ? 'disabled style="opacity:0.35;cursor:default"' : ''}>↓</button>
             <button type="button" class="cat-manage-btn cat-edit-btn" data-id="${escapeHtml(cat.id)}" title="重命名或修改颜色">✎ 编辑</button>
             <button type="button" class="cat-manage-btn del cat-del-btn" data-id="${escapeHtml(cat.id)}" title="删除此分类夹">🗑 删除</button>
           </div>
         </div>
       `;
     }).join('');
+
+    const moveCategoryAtIndex = async (fromIdx, toIdx) => {
+      if (toIdx < 0 || toIdx >= appData.categories.length) return;
+      const ids = appData.categories.map(c => c.id);
+      const [moved] = ids.splice(fromIdx, 1);
+      ids.splice(toIdx, 0, moved);
+      const res = await window.blinkAPI.reorderCategories(ids);
+      if (res && res.ok) {
+        appData = res.data;
+        renderCategoryManageList();
+        renderAll();
+      }
+    };
+
+    categoryManageList.querySelectorAll('.cat-move-up').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-idx'), 10);
+        moveCategoryAtIndex(idx, idx - 1);
+      });
+    });
+
+    categoryManageList.querySelectorAll('.cat-move-down').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.getAttribute('data-idx'), 10);
+        moveCategoryAtIndex(idx, idx + 1);
+      });
+    });
 
     categoryManageList.querySelectorAll('.cat-edit-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -1040,9 +1079,294 @@
     });
   }
 
+  // ==================== POINTER DRAG SORTING (分类左右拖动 & 整理模式书签上下拖动) ====================
+  function setupPointerDragSorting() {
+    window.addEventListener('mousemove', (e) => {
+      // 1. Horizontal Category Reordering (随时可左右拖动分类)
+      if (catDragState && catDragState.pill) {
+        const dx = Math.abs(e.clientX - catDragState.startX);
+        if (!catDragState.active && dx > 5) {
+          catDragState.active = true;
+          catDragState.pill.classList.add('cat-pill-dragging');
+        }
+        if (catDragState.active) {
+          const barRect = categoryTabs.getBoundingClientRect();
+          if (e.clientX < barRect.left + 32) {
+            categoryTabs.scrollLeft -= 8;
+          } else if (e.clientX > barRect.right - 32) {
+            categoryTabs.scrollLeft += 8;
+          }
+
+          const movablePills = Array.from(categoryTabs.querySelectorAll('.cat-pill')).filter(
+            el => el.getAttribute('data-cat-id') !== 'ALL'
+          );
+          const myIdx = movablePills.indexOf(catDragState.pill);
+          if (myIdx !== -1) {
+            for (let i = 0; i < movablePills.length; i++) {
+              const sib = movablePills[i];
+              if (sib === catDragState.pill) continue;
+              const rect = sib.getBoundingClientRect();
+              const midX = rect.left + rect.width / 2;
+              if (myIdx < i && e.clientX > midX) {
+                sib.after(catDragState.pill);
+                break;
+              } else if (myIdx > i && e.clientX < midX) {
+                sib.before(catDragState.pill);
+                break;
+              }
+            }
+          }
+        }
+        return;
+      }
+
+      // 2. Vertical Bookmark Reordering (仅在开启「整理」后可上下拖动排序或拖入分类夹)
+      if (bmDragState && bmDragState.card && batchMode) {
+        const dist = Math.hypot(e.clientX - bmDragState.startX, e.clientY - bmDragState.startY);
+        if (!bmDragState.active && dist > 4) {
+          bmDragState.active = true;
+          bmDragState.card.classList.add('bm-card-dragging');
+        }
+        if (bmDragState.active) {
+          // Check if pointer is hovering over a category pill at the top
+          categoryTabs.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('cat-drop-target'));
+          const elUnder = document.elementFromPoint(e.clientX, e.clientY);
+          const hoveredPill = elUnder ? elUnder.closest('.cat-pill') : null;
+          if (hoveredPill) {
+            hoveredPill.classList.add('cat-drop-target');
+            bmDragState.hoveredCatPill = hoveredPill;
+            return;
+          }
+          bmDragState.hoveredCatPill = null;
+
+          // Auto-scroll bookmarkList when dragging near top or bottom edges
+          const listRect = bookmarkList.getBoundingClientRect();
+          if (e.clientY < listRect.top + 42) {
+            bookmarkList.scrollTop -= 10;
+          } else if (e.clientY > listRect.bottom - 42) {
+            bookmarkList.scrollTop += 10;
+          }
+
+          const cards = Array.from(bookmarkList.querySelectorAll('.bookmark-card'));
+          const myIdx = cards.indexOf(bmDragState.card);
+          if (myIdx !== -1) {
+            for (let i = 0; i < cards.length; i++) {
+              const sib = cards[i];
+              if (sib === bmDragState.card) continue;
+              const rect = sib.getBoundingClientRect();
+              const midY = rect.top + rect.height / 2;
+              if (myIdx < i && e.clientY > midY) {
+                sib.after(bmDragState.card);
+                break;
+              } else if (myIdx > i && e.clientY < midY) {
+                sib.before(bmDragState.card);
+                break;
+              }
+            }
+          }
+        }
+      }
+    });
+
+    window.addEventListener('mouseup', async () => {
+      // Finish Category Drag
+      if (catDragState) {
+        const state = catDragState;
+        catDragState = null;
+        if (state.active && state.pill) {
+          state.pill.classList.remove('cat-pill-dragging');
+          suppressNextCatClick = true;
+          setTimeout(() => { suppressNextCatClick = false; }, 100);
+
+          const newOrderedIds = Array.from(categoryTabs.querySelectorAll('.cat-pill'))
+            .map(el => el.getAttribute('data-cat-id'))
+            .filter(id => id && id !== 'ALL');
+
+          const changed = newOrderedIds.length === state.initialOrder.length &&
+            newOrderedIds.some((id, idx) => id !== state.initialOrder[idx]);
+
+          if (changed) {
+            const res = await window.blinkAPI.reorderCategories(newOrderedIds);
+            if (res && res.ok) {
+              appData = res.data;
+              renderAll();
+              showToast('↔️ 分类顺序已保存');
+            }
+          }
+        }
+      }
+
+      // Finish Bookmark Drag
+      if (bmDragState) {
+        const state = bmDragState;
+        bmDragState = null;
+        if (state.active && state.card) {
+          state.card.classList.remove('bm-card-dragging');
+          categoryTabs.querySelectorAll('.cat-pill').forEach(p => p.classList.remove('cat-drop-target'));
+          suppressNextBmClick = true;
+          setTimeout(() => { suppressNextBmClick = false; }, 100);
+
+          if (state.hoveredCatPill) {
+            const targetCatId = state.hoveredCatPill.getAttribute('data-cat-id');
+            const targetCatParam = targetCatId === 'ALL' ? 'UNCATEGORIZED' : targetCatId;
+            const res = await window.blinkAPI.reorderBookmarks(state.bmId, null, targetCatParam);
+            if (res && res.ok) {
+              appData = res.data;
+              renderAll();
+              if (targetCatId === 'ALL') {
+                showToast('📁 已设为未分类（保存在「全部」中）');
+              } else {
+                const targetCat = appData.categories.find(c => c.id === targetCatId);
+                showToast(`📁 已归类至「${targetCat ? targetCat.name : '新分类'}」`);
+              }
+            }
+          } else {
+            const newOrderedIds = Array.from(bookmarkList.querySelectorAll('.bookmark-card'))
+              .map(el => el.getAttribute('data-bm-id'))
+              .filter(Boolean);
+
+            const changed = newOrderedIds.length === state.initialOrder.length &&
+              newOrderedIds.some((id, idx) => id !== state.initialOrder[idx]);
+
+            if (changed) {
+              const res = await window.blinkAPI.reorderBookmarks(state.bmId, newOrderedIds, null);
+              if (res && res.ok) {
+                appData = res.data;
+                renderAll();
+                showToast('↕️ 书签排序已保存');
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  // ==================== GITHUB AUTO-UPDATE ====================
+  async function handleCheckUpdate(silent = false) {
+    if (!window.blinkAPI.checkForUpdates) return;
+
+    if (!silent) {
+      if (btnCheckUpdate) {
+        btnCheckUpdate.disabled = true;
+        btnCheckUpdate.textContent = '正在检测...';
+      }
+      if (updateStatusBox) updateStatusBox.classList.remove('hidden');
+      if (updateStatusText) updateStatusText.textContent = '🔄 正在连接 GitHub Releases 检测最新版本...';
+      if (updateNotesBox) updateNotesBox.classList.add('hidden');
+      if (btnPerformUpdate) btnPerformUpdate.classList.add('hidden');
+    }
+
+    try {
+      const res = await window.blinkAPI.checkForUpdates();
+      if (btnCheckUpdate) {
+        btnCheckUpdate.disabled = false;
+        btnCheckUpdate.textContent = '🔍 检测更新';
+      }
+
+      if (!res || !res.ok) {
+        if (!silent) {
+          if (updateStatusBox) updateStatusBox.classList.remove('hidden');
+          if (updateStatusText) {
+            updateStatusText.textContent = '⚠️ ' + (res?.error || '检测更新失败，请稍后重试');
+          }
+          showToast('⚠️ ' + (res?.error || '检测更新失败'));
+        }
+        return;
+      }
+
+      currentAppVersion = res.currentVersion || currentAppVersion;
+      if (settingsCurrentVer) settingsCurrentVer.textContent = `v${currentAppVersion}`;
+
+      if (res.hasUpdate) {
+        latestUpdateInfo = res;
+        if (btnVersionBadge) {
+          btnVersionBadge.textContent = `v${currentAppVersion} · 🆕 v${res.latestVersion}`;
+          btnVersionBadge.classList.add('has-update');
+          btnVersionBadge.title = `发现新版本 v${res.latestVersion}！点击立即查看并一键更新`;
+        }
+        if (updateStatusBox) updateStatusBox.classList.remove('hidden');
+        if (updateStatusText) {
+          updateStatusText.innerHTML = `🎉 发现 GitHub 新版本 <strong>v${escapeHtml(res.latestVersion)}</strong>（当前版本 v${escapeHtml(currentAppVersion)}）`;
+        }
+        if (updateNotesBox && res.releaseNotes) {
+          updateNotesBox.textContent = res.releaseNotes;
+          updateNotesBox.classList.remove('hidden');
+        }
+        if (btnPerformUpdate) {
+          btnPerformUpdate.textContent = `🚀 立即更新至 v${res.latestVersion}（自动保留全部书签）`;
+          btnPerformUpdate.classList.remove('hidden');
+          btnPerformUpdate.disabled = false;
+        }
+        if (silent) {
+          showToast(`🆕 发现新版本 v${res.latestVersion}，点击顶部版本号即可一键更新`);
+        }
+      } else {
+        latestUpdateInfo = null;
+        if (btnVersionBadge) {
+          btnVersionBadge.textContent = `v${currentAppVersion}`;
+          btnVersionBadge.classList.remove('has-update');
+        }
+        if (!silent) {
+          if (updateStatusBox) updateStatusBox.classList.remove('hidden');
+          if (updateStatusText) {
+            updateStatusText.textContent = `✅ 当前已是最新版本 (v${currentAppVersion})，无需更新。`;
+          }
+          if (updateNotesBox) updateNotesBox.classList.add('hidden');
+          if (btnPerformUpdate) btnPerformUpdate.classList.add('hidden');
+          showToast(`✅ 当前已是最新版本 v${currentAppVersion}`);
+        }
+      }
+    } catch (err) {
+      if (btnCheckUpdate) {
+        btnCheckUpdate.disabled = false;
+        btnCheckUpdate.textContent = '🔍 检测更新';
+      }
+      if (!silent) {
+        showToast('❌ 检测更新出错');
+      }
+    }
+  }
+
+  async function handlePerformUpdate() {
+    if (!latestUpdateInfo || !latestUpdateInfo.downloadUrl) {
+      showToast('⚠️ 未获取到有效的更新包下载链接');
+      return;
+    }
+
+    if (btnPerformUpdate) {
+      btnPerformUpdate.disabled = true;
+      btnPerformUpdate.textContent = '⏳ 正在下载更新并备份书签，请稍候...';
+    }
+    if (btnCheckUpdate) btnCheckUpdate.disabled = true;
+    if (updateProgressWrap) updateProgressWrap.classList.remove('hidden');
+    if (updateProgressBar) updateProgressBar.style.width = '2%';
+    if (updateProgressText) updateProgressText.textContent = '正在自动备份加密书签并连接 GitHub 下载更新包...';
+
+    const res = await window.blinkAPI.downloadAndInstallUpdate(
+      latestUpdateInfo.downloadUrl,
+      latestUpdateInfo.latestVersion
+    );
+
+    if (!res || !res.ok) {
+      if (btnPerformUpdate) {
+        btnPerformUpdate.disabled = false;
+        btnPerformUpdate.textContent = `🚀 重新尝试更新至 v${latestUpdateInfo.latestVersion}`;
+      }
+      if (btnCheckUpdate) btnCheckUpdate.disabled = false;
+      if (updateProgressText) {
+        updateProgressText.textContent = '❌ ' + (res?.error || '下载或安装失败');
+      }
+      showToast('❌ ' + (res?.error || '更新失败'));
+    } else {
+      showToast('🚀 更新包下载完成，正在为您无缝升级并重启...');
+    }
+  }
+
   // ==================== EVENT BINDINGS ====================
   function bindEvents() {
     setupFloatingOrbInteraction();
+    setupPointerDragSorting();
 
     authForm.addEventListener('submit', handleAuthSubmit);
 
@@ -1085,6 +1409,27 @@
       changePwdMsg.classList.add('hidden');
       settingsModal.classList.remove('hidden');
     });
+
+    if (btnVersionBadge) {
+      btnVersionBadge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!isUnlocked) {
+          showToast(`当前版本 v${currentAppVersion} · 请先解锁后检测更新`);
+          return;
+        }
+        changePwdMsg.classList.add('hidden');
+        settingsModal.classList.remove('hidden');
+        handleCheckUpdate(false);
+      });
+    }
+
+    if (btnCheckUpdate) {
+      btnCheckUpdate.addEventListener('click', () => handleCheckUpdate(false));
+    }
+
+    if (btnPerformUpdate) {
+      btnPerformUpdate.addEventListener('click', () => handlePerformUpdate());
+    }
 
     btnCloseApp.addEventListener('click', () => {
       window.blinkAPI.closeWindow();

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none';" />
-  <title>Blink · 灵动书签</title>
+  <title>Blink · 灵动书签 v1.0.1</title>
   <link rel="icon" href="../../logo.ico" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
@@ -30,6 +30,7 @@
         </div>
         <span class="brand-title">Blink</span>
         <span class="brand-subtitle">灵动书签</span>
+        <button type="button" id="btnVersionBadge" class="version-badge" title="当前版本 v1.0.1 · 点击检测 GitHub 新版本">v1.0.1</button>
       </div>
 
       <div class="titlebar-actions">
@@ -184,24 +185,29 @@
           <button id="btnQuickImport" class="text-action-btn" title="从谷歌/Edge/Brave导出的HTML文件增量导入书签">
             📥 导入书签
           </button>
-          <button id="btnToggleBatch" class="text-action-btn" title="开启批量勾选删除或归类整理">
-            ☑ 整理
+          <button id="btnToggleBatch" class="text-action-btn" title="开启整理模式后，可按住书签上下拖拽排序、批量归类或删除（防止日常点击误触）">
+            ⇅ 整理
           </button>
         </div>
       </div>
 
       <!-- Batch Action Bar (Shown when in Batch Organize mode) -->
       <div id="batchActionBar" class="batch-bar hidden">
-        <label class="batch-check-all">
-          <input type="checkbox" id="batchSelectAll" />
-          <span id="batchSelectedCount">已选 0 项</span>
-        </label>
-        <div class="batch-actions">
-          <select id="batchMoveCategorySelect" class="batch-select">
-            <option value="">移动到分类...</option>
-          </select>
-          <button id="btnBatchDelete" class="batch-del-btn">删除所选</button>
-          <button id="btnExitBatch" class="batch-cancel-btn">完成</button>
+        <div class="batch-bar-top">
+          <label class="batch-check-all">
+            <input type="checkbox" id="batchSelectAll" />
+            <span id="batchSelectedCount">已选 0 项</span>
+          </label>
+          <div class="batch-actions">
+            <select id="batchMoveCategorySelect" class="batch-select">
+              <option value="">移动到分类...</option>
+            </select>
+            <button id="btnBatchDelete" class="batch-del-btn">删除所选</button>
+            <button id="btnExitBatch" class="batch-cancel-btn">✓ 完成整理</button>
+          </div>
+        </div>
+        <div class="batch-sort-tip">
+          💡 <strong>整理模式已开启</strong>：按住任意书签即可<strong>上下拖动排序</strong>（或拖到上方分类夹归类），点击不会误打开网页
         </div>
       </div>
 
@@ -368,6 +374,28 @@
           <button class="modal-close" data-close="settingsModal">×</button>
         </div>
         <div class="modal-body settings-scroll">
+
+          <!-- Section 0: Version & GitHub Auto-Update -->
+          <div class="settings-section update-section">
+            <div class="update-header-row">
+              <div>
+                <div class="section-title">🔄 版本检测与在线更新 (GitHub)</div>
+                <div class="update-cur-ver">当前版本：<strong id="settingsCurrentVer">v1.0.1</strong> · <span class="safe-keep-tag">🛡️ 更新自动保留全部加密书签</span></div>
+              </div>
+              <button type="button" id="btnCheckUpdate" class="secondary-btn">🔍 检测更新</button>
+            </div>
+            <div id="updateStatusBox" class="update-status-box hidden">
+              <div id="updateStatusText" class="update-status-text"></div>
+              <div id="updateNotesBox" class="update-notes-box hidden"></div>
+              <div id="updateProgressWrap" class="update-progress-wrap hidden">
+                <div class="update-progress-track">
+                  <div id="updateProgressBar" class="update-progress-fill" style="width: 0%"></div>
+                </div>
+                <div id="updateProgressText" class="update-progress-text">准备下载...</div>
+              </div>
+              <button type="button" id="btnPerformUpdate" class="primary-btn full-width hidden">🚀 立即一键更新（保留全部书签）</button>
+            </div>
+          </div>
 
           <!-- Section A: Import Bookmarks -->
           <div class="settings-section">

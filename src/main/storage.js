@@ -34,6 +34,7 @@ class StorageManager {
       fs.mkdirSync(this.dataDir, { recursive: true });
     }
     this.filePath = path.join(this.dataDir, 'blink-store.json');
+    this.backupFilePath = path.join(this.dataDir, 'blink-store.backup.json');
     this.sessionKey = null; // 32-byte Buffer derived from user's password via scrypt (only in RAM while unlocked)
     this.unlockedVault = null; // { categories: [], bookmarks: [] } (only in RAM while unlocked)
     this.failedAuthAttempts = 0;
@@ -174,47 +175,53 @@ class StorageManager {
       passwordHint: ''
     };
 
-    try {
-      if (fs.existsSync(this.filePath)) {
-        const raw = fs.readFileSync(this.filePath, 'utf-8');
-        const parsed = JSON.parse(raw);
+    const candidatePaths = [this.filePath, this.backupFilePath];
+    for (const candidatePath of candidatePaths) {
+      try {
+        if (candidatePath && fs.existsSync(candidatePath)) {
+          const raw = fs.readFileSync(candidatePath, 'utf-8');
+          const parsed = JSON.parse(raw);
 
-        const auth = { ...defaultAuth, ...(parsed.auth || {}) };
-        if (!auth.encryptionSalt) {
-          auth.encryptionSalt = crypto.randomBytes(16).toString('hex');
-        }
-        const settings = { ...defaultSettings, ...(parsed.settings || {}) };
+          const auth = { ...defaultAuth, ...(parsed.auth || {}) };
+          if (!auth.encryptionSalt) {
+            auth.encryptionSalt = crypto.randomBytes(16).toString('hex');
+          }
+          const settings = { ...defaultSettings, ...(parsed.settings || {}) };
 
-        const state = {
-          auth,
-          settings,
-          encryptedVault: parsed.encryptedVault || null,
-          legacySealedVault: parsed.legacySealedVault || null
-        };
-
-        // Seamless migration: if legacy plaintext categories/bookmarks exist on disk,
-        // immediately seal them and wipe plaintext from disk!
-        if (Array.isArray(parsed.categories) || Array.isArray(parsed.bookmarks)) {
-          const legacyVault = {
-            categories: Array.isArray(parsed.categories) ? parsed.categories : this._getDefaultVault().categories,
-            bookmarks: Array.isArray(parsed.bookmarks) ? parsed.bookmarks : this._getDefaultVault().bookmarks
+          const state = {
+            auth,
+            settings,
+            encryptedVault: parsed.encryptedVault || null,
+            legacySealedVault: parsed.legacySealedVault || null
           };
 
-          if (auth.isInitialized && auth.passwordHash && auth.passwordSalt) {
-            const transKey = this._deriveTransitionalKey(auth.passwordHash, auth.passwordSalt);
-            state.legacySealedVault = this._encryptPayload(legacyVault, transKey);
-            transKey.fill(0);
-          } else {
-            this._pendingInitialVault = legacyVault;
+          // Seamless migration: if legacy plaintext categories/bookmarks exist on disk,
+          // immediately seal them and wipe plaintext from disk!
+          if (Array.isArray(parsed.categories) || Array.isArray(parsed.bookmarks)) {
+            const legacyVault = {
+              categories: Array.isArray(parsed.categories) ? parsed.categories : this._getDefaultVault().categories,
+              bookmarks: Array.isArray(parsed.bookmarks) ? parsed.bookmarks : this._getDefaultVault().bookmarks
+            };
+
+            if (auth.isInitialized && auth.passwordHash && auth.passwordSalt) {
+              const transKey = this._deriveTransitionalKey(auth.passwordHash, auth.passwordSalt);
+              state.legacySealedVault = this._encryptPayload(legacyVault, transKey);
+              transKey.fill(0);
+            } else {
+              this._pendingInitialVault = legacyVault;
+            }
+
+            this._writeStateToDisk(state);
+          } else if (candidatePath === this.backupFilePath) {
+            // Restored from backup file -> write back primary store immediately
+            this._writeStateToDisk(state);
           }
 
-          this._writeStateToDisk(state);
+          return state;
         }
-
-        return state;
+      } catch (err) {
+        console.error(`Failed to load store from ${candidatePath}:`, err);
       }
-    } catch (err) {
-      console.error('Failed to load store, initializing clean state:', err);
     }
 
     const initial = {
@@ -241,9 +248,19 @@ class StorageManager {
       if (stateToSave.legacySealedVault) {
         cleanDiskPayload.legacySealedVault = stateToSave.legacySealedVault;
       }
+      const serialized = JSON.stringify(cleanDiskPayload, null, 2);
       const tmpPath = this.filePath + '.tmp';
-      fs.writeFileSync(tmpPath, JSON.stringify(cleanDiskPayload, null, 2), 'utf-8');
+      fs.writeFileSync(tmpPath, serialized, 'utf-8');
       fs.renameSync(tmpPath, this.filePath);
+
+      // Keep automatic redundant backup whenever an initialized encrypted vault is present
+      if (cleanDiskPayload.auth && cleanDiskPayload.auth.isInitialized && cleanDiskPayload.encryptedVault) {
+        try {
+          const bakTmp = this.backupFilePath + '.tmp';
+          fs.writeFileSync(bakTmp, serialized, 'utf-8');
+          fs.renameSync(bakTmp, this.backupFilePath);
+        } catch {}
+      }
     } catch (err) {
       console.error('Failed to write encrypted store:', err);
     }
@@ -527,6 +544,8 @@ class StorageManager {
         cat.order = map.get(cat.id);
       }
     });
+    this.unlockedVault.categories.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    this.unlockedVault.categories.forEach((cat, idx) => { cat.order = idx; });
     this._save();
     return { ok: true, data: this.getAllData() };
   }
@@ -616,20 +635,52 @@ class StorageManager {
 
   moveBookmarkOrderAndCategory(movedId, orderedIds, newCategoryId) {
     if (!this.isUnlocked()) return { ok: false, error: '书签库已上锁，请先解锁' };
-    if (newCategoryId !== undefined && newCategoryId !== null) {
-      const target = this.unlockedVault.bookmarks.find(b => b.id === movedId);
+    const target = this.unlockedVault.bookmarks.find(b => b.id === movedId);
+    if (newCategoryId !== undefined && newCategoryId !== null && target) {
+      target.categoryId = newCategoryId === 'UNCATEGORIZED' ? '' : String(newCategoryId);
+    }
+
+    if (Array.isArray(orderedIds) && orderedIds.length > 0) {
+      const bmById = new Map(this.unlockedVault.bookmarks.map(b => [b.id, b]));
+
+      // Sync pinned state if movedId crossed the boundary between pinned and unpinned items
       if (target) {
-        target.categoryId = newCategoryId === 'UNCATEGORIZED' ? '' : String(newCategoryId);
-      }
-    }
-    if (Array.isArray(orderedIds)) {
-      const orderMap = new Map(orderedIds.map((id, idx) => [id, idx]));
-      this.unlockedVault.bookmarks.forEach(b => {
-        if (orderMap.has(b.id)) {
-          b.order = orderMap.get(b.id);
+        const movedPos = orderedIds.indexOf(movedId);
+        if (movedPos !== -1) {
+          const hasPinnedAfter = orderedIds.slice(movedPos + 1).some(id => bmById.get(id)?.pinned);
+          const hasUnpinnedBefore = orderedIds.slice(0, movedPos).some(id => bmById.get(id) && !bmById.get(id).pinned);
+          if (hasPinnedAfter && !target.pinned) {
+            target.pinned = true;
+          } else if (hasUnpinnedBefore && target.pinned) {
+            target.pinned = false;
+          }
         }
+      }
+
+      // Merge subset order (e.g. within a category) or full order into the global sorted list
+      const fullSorted = [...this.unlockedVault.bookmarks].sort((a, b) => {
+        if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+          return a.pinned ? -1 : 1;
+        }
+        return (a.order ?? 0) - (b.order ?? 0);
       });
+
+      const subsetSet = new Set(orderedIds);
+      const orderedItems = orderedIds.map(id => bmById.get(id)).filter(Boolean);
+      let takeIdx = 0;
+
+      for (let i = 0; i < fullSorted.length; i++) {
+        if (subsetSet.has(fullSorted[i].id) && takeIdx < orderedItems.length) {
+          fullSorted[i] = orderedItems[takeIdx++];
+        }
+      }
+
+      fullSorted.forEach((b, idx) => {
+        b.order = idx;
+      });
+      this.unlockedVault.bookmarks = fullSorted;
     }
+
     this._save();
     return { ok: true, data: this.getAllData() };
   }
@@ -639,9 +690,21 @@ class StorageManager {
     const minOrder = this.unlockedVault.bookmarks.reduce((min, item) => Math.min(min, item.order ?? 0), 0);
     const target = this.unlockedVault.bookmarks.find(b => b.id === bookmarkId);
     if (target) {
+      const hasAnyPinned = this.unlockedVault.bookmarks.some(
+        b => b.id !== bookmarkId && b.pinned && (b.categoryId === target.categoryId || !target.categoryId)
+      );
+      if (hasAnyPinned) {
+        target.pinned = true;
+      }
       target.order = minOrder - 1;
-      const sorted = [...this.unlockedVault.bookmarks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const sorted = [...this.unlockedVault.bookmarks].sort((a, b) => {
+        if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+          return a.pinned ? -1 : 1;
+        }
+        return (a.order ?? 0) - (b.order ?? 0);
+      });
       sorted.forEach((b, idx) => { b.order = idx; });
+      this.unlockedVault.bookmarks = sorted;
       this._save();
     }
     return { ok: true, data: this.getAllData() };

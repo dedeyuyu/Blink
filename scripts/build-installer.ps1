@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if (-not (Test-Path $csc)) {
@@ -151,8 +151,10 @@ if (Test-Path $payloadZip) {
 }
 [System.IO.Compression.ZipFile]::CreateFromDirectory($appDistDir, $payloadZip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 
-Write-Host "[6/6] Building self-extracting Windows installer Blink-Setup-1.0.0.exe..."
-$setupExe = Join-Path $releaseDir "Blink-Setup-1.0.0.exe"
+$pkgJson = Get-Content (Join-Path $rootDir "package.json") -Raw | ConvertFrom-Json
+$pkgVer = $pkgJson.version
+Write-Host "[6/6] Building self-extracting Windows installer Blink-Setup-$pkgVer.exe..."
+$setupExe = Join-Path $releaseDir "Blink-Setup-$pkgVer.exe"
 if (Test-Path $setupExe) {
     Remove-Item $setupExe -Force
 }

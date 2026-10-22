@@ -70,6 +70,17 @@ const api = Object.freeze({
     const handler = (_, mode) => callback(mode);
     on('window:mode-changed', handler);
     return () => removeListener('window:mode-changed', handler);
+  },
+
+  // App Version & GitHub Auto-Update
+  getAppVersion: () => invoke('app:version'),
+  checkForUpdates: () => invoke('update:check'),
+  downloadAndInstallUpdate: (downloadUrl, latestVersion) =>
+    invoke('update:downloadAndInstall', { downloadUrl, latestVersion }),
+  onUpdateProgress: (callback) => {
+    const handler = (_, progress) => callback(progress);
+    on('update:progress', handler);
+    return () => removeListener('update:progress', handler);
   }
 });
 

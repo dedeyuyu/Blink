@@ -94,7 +94,7 @@ namespace BlinkInstaller
 
         public InstallerForm()
         {
-            this.Text = "Blink · 灵动书签 v1.0.0 安装向导";
+            this.Text = "Blink · 灵动书签 v1.0.1 安装向导";
             this.Size = new Size(540, 410);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -131,7 +131,7 @@ namespace BlinkInstaller
 
             Label lblTitle = new Label
             {
-                Text = "Blink · 灵动书签 v1.0.0",
+                Text = "Blink · 灵动书签 v1.0.1",
                 Font = new Font("Microsoft YaHei UI", 15f, FontStyle.Bold),
                 ForeColor = Color.White,
                 Location = new Point(94, 20),
@@ -363,7 +363,7 @@ namespace BlinkInstaller
                         }
                         else
                         {
-                            MessageBox.Show(this, "Blink · 灵动书签 v1.0.0 已成功安装！", "安装成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            MessageBox.Show(this, "Blink · 灵动书签 v1.0.1 已成功安装！", "安装成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
                         }
                         this.Close();
                     });
@@ -403,6 +403,7 @@ namespace BlinkInstaller
             Application.SetCompatibleTextRenderingDefault(false);
 
             bool silent = false;
+            bool launchAfter = false;
             string customDir = null;
 
             for (int i = 0; i < args.Length; i++)
@@ -412,6 +413,11 @@ namespace BlinkInstaller
                     string.Equals(a, "--silent", StringComparison.OrdinalIgnoreCase))
                 {
                     silent = true;
+                }
+                else if (string.Equals(a, "/LAUNCH", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(a, "--launch", StringComparison.OrdinalIgnoreCase))
+                {
+                    launchAfter = true;
                 }
                 else if (a.StartsWith("/D=", StringComparison.OrdinalIgnoreCase))
                 {
@@ -432,7 +438,29 @@ namespace BlinkInstaller
                 }
                 try
                 {
+                    if (launchAfter)
+                    {
+                        Thread.Sleep(1200);
+                    }
                     RunInstallation(targetDir, true, true, null);
+                    if (launchAfter)
+                    {
+                        string blinkExe = Path.Combine(targetDir, "Blink.exe");
+                        if (File.Exists(blinkExe))
+                        {
+                            try
+                            {
+                                ProcessStartInfo psi = new ProcessStartInfo
+                                {
+                                    FileName = blinkExe,
+                                    WorkingDirectory = targetDir,
+                                    UseShellExecute = true
+                                };
+                                Process.Start(psi);
+                            }
+                            catch { }
+                        }
+                    }
                     return 0;
                 }
                 catch (Exception ex)
@@ -454,9 +482,29 @@ namespace BlinkInstaller
         {
             if (onProgress != null) onProgress(2, "正在检查运行中的进程...");
 
-            // Stop existing Blink / BrowserBridge processes if running from targetDir
+            // Stop existing Blink / BrowserBridge process trees so no files remain locked during update
             try
             {
+                foreach (string img in new[] { "Blink.exe", "BrowserBridge.exe" })
+                {
+                    try
+                    {
+                        ProcessStartInfo tk = new ProcessStartInfo
+                        {
+                            FileName = "taskkill.exe",
+                            Arguments = "/F /IM " + img + " /T",
+                            CreateNoWindow = true,
+                            WindowStyle = ProcessWindowStyle.Hidden,
+                            UseShellExecute = false
+                        };
+                        using (Process p = Process.Start(tk))
+                        {
+                            if (p != null) p.WaitForExit(3000);
+                        }
+                    }
+                    catch { }
+                }
+
                 foreach (string procName in new[] { "Blink", "BrowserBridge" })
                 {
                     foreach (Process p in Process.GetProcessesByName(procName))
@@ -466,16 +514,65 @@ namespace BlinkInstaller
                             if (p.Id != Process.GetCurrentProcess().Id)
                             {
                                 p.Kill();
-                                p.WaitForExit(2000);
+                                p.WaitForExit(3000);
                             }
                         }
                         catch { }
+                    }
+                }
+                Thread.Sleep(400);
+            }
+            catch { }
+
+            // Clean up any leftover .old_* files from previous in-place updates
+            try
+            {
+                if (Directory.Exists(targetDir))
+                {
+                    foreach (string oldFile in Directory.GetFiles(targetDir, "*.old_*", SearchOption.AllDirectories))
+                    {
+                        try { File.Delete(oldFile); } catch { }
                     }
                 }
             }
             catch { }
 
             Directory.CreateDirectory(targetDir);
+
+            // Preserve any existing user bookmark vault data before extracting update files
+            byte[] portableStoreBackup = null;
+            string portableStorePath = Path.Combine(targetDir, "data", "blink-store.json");
+            try
+            {
+                if (File.Exists(portableStorePath))
+                {
+                    portableStoreBackup = File.ReadAllBytes(portableStorePath);
+                }
+            }
+            catch { }
+
+            try
+            {
+                string appDataVaultDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "blink-bookmarks",
+                    "data"
+                );
+                Directory.CreateDirectory(appDataVaultDir);
+                string appDataStore = Path.Combine(appDataVaultDir, "blink-store.json");
+                string tempPreserve = Path.Combine(Path.GetTempPath(), "blink-vault-preserve.json");
+                if (File.Exists(tempPreserve))
+                {
+                    FileInfo tempFi = new FileInfo(tempPreserve);
+                    FileInfo appFi = File.Exists(appDataStore) ? new FileInfo(appDataStore) : null;
+                    if (appFi == null || (appFi.Length <= 2500 && tempFi.Length > appFi.Length))
+                    {
+                        File.Copy(tempPreserve, appDataStore, true);
+                        File.Copy(tempPreserve, Path.Combine(appDataVaultDir, "blink-store.backup.json"), true);
+                    }
+                }
+            }
+            catch { }
 
             string selfExe = Application.ExecutablePath;
             using (FileStream fs = new FileStream(selfExe, FileMode.Open, FileAccess.Read, FileShare.Read))
@@ -544,12 +641,47 @@ namespace BlinkInstaller
                         }
 
                         using (Stream entryStream = entry.Open())
-                        using (FileStream outStream = new FileStream(fullDest, FileMode.Create, FileAccess.Write, FileShare.None))
                         {
-                            entryStream.CopyTo(outStream);
+                            FileStream outStream = null;
+                            for (int attempt = 0; attempt < 10; attempt++)
+                            {
+                                try
+                                {
+                                    outStream = new FileStream(fullDest, FileMode.Create, FileAccess.Write, FileShare.None);
+                                    break;
+                                }
+                                catch (IOException)
+                                {
+                                    if (attempt == 5 && File.Exists(fullDest))
+                                    {
+                                        try
+                                        {
+                                            string renamedOld = fullDest + ".old_" + Guid.NewGuid().ToString("N").Substring(0, 6);
+                                            File.Move(fullDest, renamedOld);
+                                        }
+                                        catch { }
+                                    }
+                                    if (attempt == 9) throw;
+                                    Thread.Sleep(300);
+                                }
+                            }
+                            using (outStream)
+                            {
+                                entryStream.CopyTo(outStream);
+                            }
                         }
                     }
                 }
+            }
+
+            if (portableStoreBackup != null && portableStoreBackup.Length > 0)
+            {
+                try
+                {
+                    Directory.CreateDirectory(Path.Combine(targetDir, "data"));
+                    File.WriteAllBytes(portableStorePath, portableStoreBackup);
+                }
+                catch { }
             }
 
             string mainExe = Path.Combine(targetDir, "Blink.exe");
@@ -615,7 +747,7 @@ namespace BlinkInstaller
                     if (key != null)
                     {
                         key.SetValue("DisplayName", "Blink · 灵动书签");
-                        key.SetValue("DisplayVersion", "1.0.0");
+                        key.SetValue("DisplayVersion", "1.0.1");
                         key.SetValue("Publisher", "Blink Desktop");
                         key.SetValue("DisplayIcon", iconFile);
                         key.SetValue("InstallLocation", targetDir);

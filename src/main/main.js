@@ -1,9 +1,13 @@
 const { app, BrowserWindow, ipcMain, dialog, screen, shell, Tray, Menu, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
 const { spawn, execFileSync } = require('child_process');
 const { StorageManager, normalizeSafeHttpUrl } = require('./storage');
 const { parseBookmarkHtml, parseBookmarkHtmlFile } = require('./bookmarkParser');
+
+const APP_VERSION = app.getVersion() || '1.0.1';
+const GITHUB_REPO = 'dedeyuyu/Blink';
 
 // Disable Chromium HTTP & disk caches so no bookmark/UI residue is ever written to Chromium disk cache
 app.commandLine.appendSwitch('disable-http-cache');
@@ -44,25 +48,110 @@ function getIconPath() {
   return undefined;
 }
 
+function getVaultCipherLength(filePath) {
+  try {
+    if (!filePath || !fs.existsSync(filePath)) return -1;
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    if (parsed && parsed.auth && parsed.auth.isInitialized && parsed.encryptedVault && typeof parsed.encryptedVault.data === 'string') {
+      return parsed.encryptedVault.data.length;
+    }
+    return 0;
+  } catch {
+    return -1;
+  }
+}
+
+function ensureVaultIntegrityAndSync(primaryDir) {
+  try {
+    fs.mkdirSync(primaryDir, { recursive: true });
+    const primaryStore = path.join(primaryDir, 'blink-store.json');
+    const primaryLen = getVaultCipherLength(primaryStore);
+
+    const userDataStore = path.join(app.getPath('userData'), 'data', 'blink-store.json');
+    const preserveStore = path.join(app.getPath('temp'), 'blink-vault-preserve.json');
+    const preUpdateBak = path.join(primaryDir, 'blink-store.pre-update.bak');
+    const primaryBak = path.join(primaryDir, 'blink-store.backup.json');
+
+    const candidates = [preserveStore, preUpdateBak, primaryBak, userDataStore];
+    if (!app.isPackaged) {
+      const localStore = path.join(app.getAppPath(), 'data', 'blink-store.json');
+      candidates.push(localStore);
+    }
+
+    let bestCandidate = null;
+    let bestLen = primaryLen;
+
+    for (const cand of candidates) {
+      if (cand === primaryStore) continue;
+      const candLen = getVaultCipherLength(cand);
+      // Restore if primary is missing/uninitialized OR if primary is just the tiny demo store (<= 2000) while a real backup (> 2000) exists
+      if (candLen > 0 && (bestLen <= 0 || (bestLen <= 2000 && candLen > bestLen))) {
+        bestLen = candLen;
+        bestCandidate = cand;
+      }
+    }
+
+    if (bestCandidate) {
+      fs.copyFileSync(bestCandidate, primaryStore);
+      fs.copyFileSync(bestCandidate, primaryBak);
+    }
+  } catch (err) {
+    console.error('Vault integrity check warning:', err);
+  }
+}
+
+function syncVaultToAllSafeLocations() {
+  try {
+    if (storage && storage.isUnlocked()) {
+      storage._save();
+    }
+    const activeDir = getDataDirectory();
+    const activeStore = path.join(activeDir, 'blink-store.json');
+    if (getVaultCipherLength(activeStore) <= 0) return;
+
+    const userDataDir = path.join(app.getPath('userData'), 'data');
+    fs.mkdirSync(userDataDir, { recursive: true });
+
+    const targets = [
+      path.join(activeDir, 'blink-store.backup.json'),
+      path.join(activeDir, 'blink-store.pre-update.bak'),
+      path.join(userDataDir, 'blink-store.json'),
+      path.join(userDataDir, 'blink-store.backup.json'),
+      path.join(userDataDir, 'blink-store.pre-update.bak'),
+      path.join(app.getPath('temp'), 'blink-vault-preserve.json')
+    ];
+
+    for (const dst of targets) {
+      try {
+        if (path.resolve(dst) !== path.resolve(activeStore)) {
+          fs.copyFileSync(activeStore, dst);
+        }
+      } catch {}
+    }
+  } catch {}
+}
+
 function getDataDirectory() {
+  let targetDir;
   if (app.isPackaged) {
     try {
       const portableDataDir = path.join(path.dirname(process.execPath), 'data');
       if (fs.existsSync(path.join(portableDataDir, 'blink-store.json'))) {
-        return portableDataDir;
+        targetDir = portableDataDir;
       }
     } catch {}
-    const userDataDir = path.join(app.getPath('userData'), 'data');
-    fs.mkdirSync(userDataDir, { recursive: true });
-    return userDataDir;
+    if (!targetDir) {
+      targetDir = path.join(app.getPath('userData'), 'data');
+    }
+  } else {
+    try {
+      targetDir = path.join(app.getAppPath(), 'data');
+    } catch {
+      targetDir = path.join(app.getPath('userData'), 'data');
+    }
   }
-  try {
-    const localDataDir = path.join(app.getAppPath(), 'data');
-    fs.mkdirSync(localDataDir, { recursive: true });
-    return localDataDir;
-  } catch {
-    return path.join(app.getPath('userData'), 'data');
-  }
+  ensureVaultIntegrityAndSync(targetDir);
+  return targetDir;
 }
 
 function purgePlaintextLogsAndCaches() {
@@ -339,7 +428,7 @@ function createSystemTray() {
 
   try {
     appTray = new Tray(iconPath);
-    appTray.setToolTip('Blink · 灵动书签 (AES-256 加密保护)');
+    appTray.setToolTip(`Blink · 灵动书签 v${APP_VERSION} (AES-256 加密保护)`);
 
     const contextMenu = Menu.buildFromTemplate([
       {
@@ -511,6 +600,7 @@ if (!gotLock) {
 }
 
 app.on('before-quit', () => {
+  syncVaultToAllSafeLocations();
   if (storage) {
     storage.lock();
   }
@@ -757,5 +847,330 @@ ipcMain.handle('window:minimize', () => {
 ipcMain.handle('window:close', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.close();
+  }
+});
+
+// ==================== Version & GitHub Auto-Update ====================
+
+function normalizeVersion(ver) {
+  return String(ver || '')
+    .trim()
+    .replace(/^[vV]+/, '')
+    .split('-')[0];
+}
+
+function compareSemver(verA, verB) {
+  const a = normalizeVersion(verA).split('.').map(n => parseInt(n, 10) || 0);
+  const b = normalizeVersion(verB).split('.').map(n => parseInt(n, 10) || 0);
+  const len = Math.max(a.length, b.length, 3);
+  for (let i = 0; i < len; i++) {
+    const na = a[i] || 0;
+    const nb = b[i] || 0;
+    if (na > nb) return 1;
+    if (na < nb) return -1;
+  }
+  return 0;
+}
+
+function fetchJsonHttps(url, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      url,
+      {
+        headers: {
+          'User-Agent': `Blink-Bookmark-Manager/${APP_VERSION}`,
+          Accept: 'application/vnd.github+json'
+        },
+        timeout: timeoutMs
+      },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          res.resume();
+          fetchJsonHttps(res.headers.location, timeoutMs).then(resolve).catch(reject);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => { body += chunk; });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy(new Error('Request timed out'));
+    });
+    req.on('error', reject);
+  });
+}
+
+function fetchLatestTagFromRedirect(timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      `https://github.com/${GITHUB_REPO}/releases/latest`,
+      {
+        headers: { 'User-Agent': `Blink-Bookmark-Manager/${APP_VERSION}` },
+        timeout: timeoutMs
+      },
+      (res) => {
+        res.resume();
+        const loc = res.headers.location || '';
+        const match = loc.match(/\/releases\/tag\/([^/?#]+)/i);
+        if (match && match[1]) {
+          const tag = decodeURIComponent(match[1]);
+          const ver = normalizeVersion(tag);
+          resolve({
+            tag_name: tag,
+            latestVersion: ver,
+            downloadUrl: `https://github.com/${GITHUB_REPO}/releases/download/${tag}/Blink-Setup-${ver}.exe`,
+            html_url: `https://github.com/${GITHUB_REPO}/releases/tag/${tag}`,
+            body: `Blink v${ver} 版本更新`
+          });
+        } else {
+          reject(new Error('未能从 GitHub Releases 获取版本标签'));
+        }
+      }
+    );
+    req.on('timeout', () => req.destroy(new Error('连接 GitHub 超时')));
+    req.on('error', reject);
+  });
+}
+
+ipcMain.handle('app:version', () => {
+  return { version: APP_VERSION, repo: GITHUB_REPO };
+});
+
+ipcMain.handle('update:check', async () => {
+  try {
+    let latestVersion = '';
+    let tagName = '';
+    let releaseNotes = '';
+    let downloadUrl = '';
+    let releasePageUrl = `https://github.com/${GITHUB_REPO}/releases`;
+    let publishedAt = '';
+
+    try {
+      const release = await fetchJsonHttps(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`);
+      tagName = release.tag_name || '';
+      latestVersion = normalizeVersion(tagName || release.name || '');
+      releaseNotes = release.body || '';
+      releasePageUrl = release.html_url || releasePageUrl;
+      publishedAt = release.published_at || '';
+
+      if (Array.isArray(release.assets)) {
+        const exeAsset = release.assets.find(a => a && a.name && /\.exe$/i.test(a.name));
+        if (exeAsset && exeAsset.browser_download_url) {
+          downloadUrl = exeAsset.browser_download_url;
+        }
+      }
+      if (!downloadUrl && tagName && latestVersion) {
+        downloadUrl = `https://github.com/${GITHUB_REPO}/releases/download/${tagName}/Blink-Setup-${latestVersion}.exe`;
+      }
+    } catch {
+      const fallback = await fetchLatestTagFromRedirect();
+      tagName = fallback.tag_name;
+      latestVersion = fallback.latestVersion;
+      downloadUrl = fallback.downloadUrl;
+      releasePageUrl = fallback.html_url;
+      releaseNotes = fallback.body;
+    }
+
+    if (!latestVersion) {
+      return {
+        ok: false,
+        currentVersion: APP_VERSION,
+        error: '暂未检测到可用的 GitHub Release 版本信息'
+      };
+    }
+
+    const hasUpdate = compareSemver(latestVersion, APP_VERSION) > 0;
+    return {
+      ok: true,
+      currentVersion: APP_VERSION,
+      latestVersion,
+      tagName: tagName || `v${latestVersion}`,
+      hasUpdate,
+      releaseNotes,
+      downloadUrl,
+      releasePageUrl,
+      publishedAt
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      currentVersion: APP_VERSION,
+      error: '连接 GitHub 检测更新失败: ' + (err.message || '网络异常')
+    };
+  }
+});
+
+function isAllowedGitHubDownloadUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return (
+      host === 'github.com' ||
+      host.endsWith('.github.com') ||
+      host.endsWith('.githubusercontent.com')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function downloadFileWithProgress(url, destPath, onProgress, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirectCount > 6) {
+      reject(new Error('下载重定向次数过多'));
+      return;
+    }
+    if (!isAllowedGitHubDownloadUrl(url)) {
+      reject(new Error('仅允许从官方 GitHub 域名下载更新包'));
+      return;
+    }
+
+    const req = https.get(
+      url,
+      {
+        headers: {
+          'User-Agent': `Blink-Bookmark-Manager/${APP_VERSION}`,
+          Accept: 'application/octet-stream,*/*'
+        },
+        timeout: 30000
+      },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const nextUrl = new URL(res.headers.location, url).toString();
+          res.resume();
+          downloadFileWithProgress(nextUrl, destPath, onProgress, redirectCount + 1)
+            .then(resolve)
+            .catch(reject);
+          return;
+        }
+
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`下载失败 (HTTP ${res.statusCode})`));
+          return;
+        }
+
+        const totalBytes = parseInt(res.headers['content-length'] || '0', 10) || 0;
+        let downloadedBytes = 0;
+        const fileStream = fs.createWriteStream(destPath);
+
+        res.on('data', (chunk) => {
+          downloadedBytes += chunk.length;
+          if (onProgress) {
+            const percent = totalBytes > 0
+              ? Math.min(99, Math.round((downloadedBytes * 100) / totalBytes))
+              : 50;
+            onProgress({
+              stage: 'downloading',
+              percent,
+              downloadedMb: (downloadedBytes / (1024 * 1024)).toFixed(1),
+              totalMb: totalBytes > 0 ? (totalBytes / (1024 * 1024)).toFixed(1) : '未知'
+            });
+          }
+        });
+
+        res.pipe(fileStream);
+
+        fileStream.on('finish', () => {
+          fileStream.close(() => resolve(destPath));
+        });
+
+        fileStream.on('error', (err) => {
+          try { fs.unlinkSync(destPath); } catch {}
+          reject(err);
+        });
+      }
+    );
+
+    req.on('timeout', () => {
+      req.destroy(new Error('下载超时，请检查网络连接'));
+    });
+
+    req.on('error', (err) => {
+      try { fs.unlinkSync(destPath); } catch {}
+      reject(err);
+    });
+  });
+}
+
+ipcMain.handle('update:downloadAndInstall', async (_, { downloadUrl, latestVersion } = {}) => {
+  try {
+    if (!downloadUrl || !isAllowedGitHubDownloadUrl(downloadUrl)) {
+      return { ok: false, error: '无效的 GitHub 更新包下载地址' };
+    }
+
+    // 1. Critical step: Flush and triple-backup all user bookmarks before starting update!
+    syncVaultToAllSafeLocations();
+
+    const cleanVer = normalizeVersion(latestVersion || 'latest').replace(/[^0-9a-zA-Z._-]/g, '');
+    const tempExePath = path.join(app.getPath('temp'), `Blink-Setup-${cleanVer}-${Date.now()}.exe`);
+
+    const sendProgress = (payload) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('update:progress', payload);
+      }
+    };
+
+    sendProgress({ stage: 'downloading', percent: 1, downloadedMb: '0.0', totalMb: '...' });
+
+    await downloadFileWithProgress(downloadUrl, tempExePath, sendProgress);
+
+    // Verify downloaded file is a valid Windows PE executable (> 1 MB and starts with 'MZ')
+    const stat = fs.statSync(tempExePath);
+    if (!stat || stat.size < 1024 * 1024) {
+      try { fs.unlinkSync(tempExePath); } catch {}
+      return { ok: false, error: '下载的安装包文件不完整，请重试' };
+    }
+    const headerBuf = Buffer.alloc(2);
+    const fd = fs.openSync(tempExePath, 'r');
+    fs.readSync(fd, headerBuf, 0, 2, 0);
+    fs.closeSync(fd);
+    if (headerBuf[0] !== 0x4d || headerBuf[1] !== 0x5a) {
+      try { fs.unlinkSync(tempExePath); } catch {}
+      return { ok: false, error: '下载的文件不是有效的 Windows 安装程序' };
+    }
+
+    // 2. Re-sync vault right before quitting & launching installer
+    syncVaultToAllSafeLocations();
+    sendProgress({ stage: 'installing', percent: 100 });
+
+    const installTargetDir = app.isPackaged
+      ? path.dirname(process.execPath)
+      : path.join(process.env.LOCALAPPDATA || path.join(app.getPath('home'), 'AppData', 'Local'), 'Programs', 'Blink');
+
+    const child = spawn(tempExePath, ['/S', '/LAUNCH', `/D=${installTargetDir}`], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false
+    });
+    child.unref();
+
+    setTimeout(() => {
+      if (bridgeProc) {
+        try { bridgeProc.kill(); } catch {}
+      }
+      app.quit();
+    }, 400);
+
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: '更新下载或安装失败: ' + (err.message || '未知错误')
+    };
   }
 });
