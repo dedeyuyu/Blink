@@ -114,10 +114,10 @@ html, body {
   display: none !important;
 }
 
-/* ==================== 1. FLOATING ORB MODE (悬浮小圆圈) ==================== */
+/* ==================== 1. FLOATING ORB MODE (悬浮小圆圈 · 精巧微缩版) ==================== */
 .orb-container {
-  width: 76px;
-  height: 76px;
+  width: 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -127,29 +127,29 @@ html, body {
 
 .orb-glow {
   position: absolute;
-  width: 58px;
-  height: 58px;
+  width: 31px;
+  height: 31px;
   border-radius: 50%;
   background: linear-gradient(135deg, #6366f1, #ec4899, #8b5cf6);
-  filter: blur(8px);
-  opacity: 0.65;
+  filter: blur(4px);
+  opacity: 0.62;
   transition: transform 0.25s ease, opacity 0.25s ease;
   animation: orbPulse 3s ease-in-out infinite;
 }
 
 @keyframes orbPulse {
-  0%, 100% { transform: scale(0.95); opacity: 0.55; }
-  50% { transform: scale(1.06); opacity: 0.85; }
+  0%, 100% { transform: scale(0.94); opacity: 0.52; }
+  50% { transform: scale(1.05); opacity: 0.82; }
 }
 
 .orb-button {
   position: relative;
-  width: 56px;
-  height: 56px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
-  background: linear-gradient(145deg, rgba(30, 35, 58, 0.95), rgba(17, 20, 34, 0.98));
-  border: 1.5px solid rgba(165, 180, 252, 0.45);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45), 0 0 12px rgba(99, 102, 241, 0.35) inset;
+  background: linear-gradient(145deg, rgba(30, 35, 58, 0.96), rgba(17, 20, 34, 0.98));
+  border: 1.25px solid rgba(165, 180, 252, 0.55);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45), 0 0 8px rgba(99, 102, 241, 0.35) inset;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -163,37 +163,38 @@ html, body {
 }
 
 .orb-icon {
-  width: 26px;
-  height: 26px;
-  filter: drop-shadow(0 2px 6px rgba(99, 102, 241, 0.6));
+  width: 15px;
+  height: 15px;
+  filter: drop-shadow(0 1px 4px rgba(99, 102, 241, 0.6));
 }
 
 .orb-logo-img {
-  width: 36px;
-  height: 36px;
+  width: 18px;
+  height: 18px;
   object-fit: contain;
   border-radius: 50%;
-  filter: drop-shadow(0 2px 6px rgba(99, 102, 241, 0.5));
+  filter: drop-shadow(0 1px 4px rgba(99, 102, 241, 0.5));
   pointer-events: none;
 }
 
 .orb-badge {
   position: absolute;
   top: -2px;
-  right: -2px;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 5px;
-  border-radius: 10px;
+  right: -3px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
   background: linear-gradient(135deg, #6366f1, #8b5cf6);
   color: #fff;
-  font-size: 10.5px;
+  font-size: 8px;
   font-weight: 700;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1.5px solid rgba(15, 18, 28, 0.9);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(15, 18, 28, 0.92);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.38);
+  line-height: 1;
 }
 
 /* ==================== 2. MAIN PANEL SHELL ==================== */

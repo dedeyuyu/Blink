@@ -1,11 +1,13 @@
-const { app, BrowserWindow, ipcMain, dialog, screen, shell, Tray, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen, shell, Tray, Menu, session, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
-const { spawn, execFileSync } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const { StorageManager, normalizeSafeHttpUrl } = require('./storage');
 const { parseBookmarkHtml, parseBookmarkHtmlFile } = require('./bookmarkParser');
 
+const IS_MAC = process.platform === 'darwin';
+const IS_WIN = process.platform === 'win32';
 const APP_VERSION = app.getVersion() || '1.0.1';
 const GITHUB_REPO = 'dedeyuyu/Blink';
 
@@ -36,15 +38,55 @@ let latestBrowserTarget = {
 };
 let latestBrowserList = [];
 
-const ORB_SIZE = 76;
+const ORB_SIZE = 40;
 const DEFAULT_PANEL_WIDTH = 400;
 const DEFAULT_PANEL_HEIGHT = 650;
 
+function buildOrbShapeRects(size = ORB_SIZE) {
+  const rects = [];
+  const center = size / 2;
+  const radius = (size / 2) - 1;
+  for (let y = 0; y < size; y++) {
+    const dy = (y + 0.5) - center;
+    if (Math.abs(dy) <= radius) {
+      const halfChord = Math.sqrt(radius * radius - dy * dy);
+      let xStart = Math.max(0, Math.floor(center - halfChord));
+      let xEnd = Math.min(size, Math.ceil(center + halfChord));
+      // Allow top-right mini count badge area
+      if (y >= 1 && y <= 15) {
+        xEnd = Math.max(xEnd, size - 1);
+      }
+      if (xEnd > xStart) {
+        rects.push({ x: xStart, y, width: xEnd - xStart, height: 1 });
+      }
+    }
+  }
+  return rects;
+}
+
+const ORB_SHAPE_RECTS = buildOrbShapeRects(ORB_SIZE);
+
+function applyWindowShape(rects) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (IS_WIN || process.platform === 'linux') {
+    try {
+      mainWindow.setShape(rects);
+    } catch {}
+  }
+}
+
 function getIconPath() {
-  const rootIcon = path.join(__dirname, '..', '..', 'logo.ico');
-  if (fs.existsSync(rootIcon)) return rootIcon;
-  const appPathIcon = path.join(app.getAppPath(), 'logo.ico');
-  if (fs.existsSync(appPathIcon)) return appPathIcon;
+  const candidates = IS_MAC
+    ? ['logo.png', 'logo.icns', 'logo.ico']
+    : ['logo.ico', 'logo.png'];
+  for (const name of candidates) {
+    const rootCandidate = path.join(__dirname, '..', '..', name);
+    if (fs.existsSync(rootCandidate)) return rootCandidate;
+    try {
+      const appCandidate = path.join(app.getAppPath(), name);
+      if (fs.existsSync(appCandidate)) return appCandidate;
+    } catch {}
+  }
   return undefined;
 }
 
@@ -203,7 +245,101 @@ function ensureNativeBridgeCompiled() {
   return exePath;
 }
 
+let macBridgeTimer = null;
+let macExplicitBrowserApp = '';
+
+const MAC_KNOWN_BROWSERS = [
+  { appName: 'Safari', friendlyName: 'Apple Safari' },
+  { appName: 'Google Chrome', friendlyName: 'Google Chrome' },
+  { appName: 'Arc', friendlyName: 'Arc Browser' },
+  { appName: 'Microsoft Edge', friendlyName: 'Microsoft Edge' },
+  { appName: 'Brave Browser', friendlyName: 'Brave Browser' },
+  { appName: 'Firefox', friendlyName: 'Mozilla Firefox' },
+  { appName: 'Vivaldi', friendlyName: 'Vivaldi' },
+  { appName: 'Opera', friendlyName: 'Opera' }
+];
+
+function pollMacBrowsers() {
+  if (!IS_MAC) return;
+  const jxa = `
+    const se = Application('System Events');
+    const known = ${JSON.stringify(MAC_KNOWN_BROWSERS)};
+    const out = [];
+    for (const b of known) {
+      try {
+        const procs = se.processes.whose({ name: b.appName });
+        if (procs.length > 0) {
+          const p = procs[0];
+          let winTitle = b.friendlyName;
+          try {
+            if (p.windows.length > 0 && p.windows[0].name()) {
+              winTitle = p.windows[0].name();
+            }
+          } catch (e) {}
+          out.push({
+            hwnd: b.appName,
+            pid: Number(p.unixId()) || 0,
+            processName: b.appName,
+            friendlyName: b.friendlyName,
+            title: winTitle,
+            frontmost: Boolean(p.frontmost())
+          });
+        }
+      } catch (e) {}
+    }
+    JSON.stringify(out);
+  `;
+  execFile('osascript', ['-l', 'JavaScript', '-e', jxa], { timeout: 2500 }, (err, stdout) => {
+    if (err || !stdout) return;
+    try {
+      const items = JSON.parse(stdout.trim());
+      if (!Array.isArray(items)) return;
+      latestBrowserList = items;
+
+      const front = items.find(i => i.frontmost);
+      if (front) {
+        macExplicitBrowserApp = front.hwnd;
+      }
+      const chosen = items.find(i => i.hwnd === macExplicitBrowserApp) || front || items[0];
+      if (chosen) {
+        latestBrowserTarget = {
+          type: 'target',
+          hasTarget: true,
+          hwnd: chosen.hwnd,
+          pid: chosen.pid,
+          processName: chosen.processName,
+          friendlyName: chosen.friendlyName,
+          title: chosen.title
+        };
+      } else {
+        latestBrowserTarget = {
+          type: 'target',
+          hasTarget: false,
+          hwnd: '',
+          pid: 0,
+          processName: '',
+          friendlyName: '',
+          title: ''
+        };
+      }
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('browser:target-updated', latestBrowserTarget);
+        mainWindow.webContents.send('browser:list-updated', latestBrowserList);
+      }
+    } catch {}
+  });
+}
+
 function startBrowserBridge() {
+  if (IS_MAC) {
+    pollMacBrowsers();
+    if (!macBridgeTimer) {
+      macBridgeTimer = setInterval(pollMacBrowsers, 2500);
+    }
+    return;
+  }
+  if (!IS_WIN) return;
+
   const exePath = ensureNativeBridgeCompiled();
   if (!fs.existsSync(exePath)) {
     return;
@@ -253,6 +389,32 @@ function startBrowserBridge() {
 }
 
 function sendBridgeCommand(payload) {
+  if (IS_MAC && payload && typeof payload === 'object') {
+    if (payload.cmd === 'status' || payload.cmd === 'list') {
+      pollMacBrowsers();
+      return true;
+    }
+    if (payload.cmd === 'select' && payload.hwnd) {
+      macExplicitBrowserApp = String(payload.hwnd);
+      pollMacBrowsers();
+      return true;
+    }
+    if (payload.cmd === 'open' && payload.url) {
+      const targetApp = payload.hwnd || latestBrowserTarget.hwnd || '';
+      if (targetApp) {
+        const args = payload.mode === 'new-window'
+          ? ['-na', targetApp, '--args', '--new-window', payload.url]
+          : ['-a', targetApp, payload.url];
+        execFile('open', args, (err) => {
+          if (err) {
+            shell.openExternal(payload.url).catch(() => {});
+          }
+        });
+        return true;
+      }
+      return false;
+    }
+  }
   if (bridgeProc && bridgeProc.stdin && !bridgeProc.stdin.destroyed) {
     try {
       bridgeProc.stdin.write(JSON.stringify(payload) + '\n');
@@ -327,9 +489,19 @@ function clampOrbToScreen(pos = {}) {
 function applyAlwaysOnTop(flag) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (flag) {
-    mainWindow.setAlwaysOnTop(true, 'screen-saver');
+    mainWindow.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver');
+    if (IS_MAC) {
+      try {
+        mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      } catch {}
+    }
   } else {
     mainWindow.setAlwaysOnTop(false);
+    if (IS_MAC) {
+      try {
+        mainWindow.setVisibleOnAllWorkspaces(false);
+      } catch {}
+    }
   }
 }
 
@@ -357,15 +529,23 @@ function switchWindowMode(targetMode) {
     }
     const clampedOrb = clampOrbToScreen(orbPos);
 
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    }
+
     windowMode = 'orb';
+    mainWindow.setIgnoreMouseEvents(false);
+    mainWindow.setResizable(true);
     mainWindow.setMinimumSize(ORB_SIZE, ORB_SIZE);
-    mainWindow.setResizable(false);
     mainWindow.setBounds({
       x: clampedOrb.x,
       y: clampedOrb.y,
       width: ORB_SIZE,
       height: ORB_SIZE
     });
+    mainWindow.setContentSize(ORB_SIZE, ORB_SIZE);
+    mainWindow.setResizable(false);
+    applyWindowShape(ORB_SHAPE_RECTS);
     mainWindow.webContents.send('window:mode-changed', 'orb');
   } else {
     const currentOrbBounds = mainWindow.getBounds();
@@ -394,6 +574,8 @@ function switchWindowMode(targetMode) {
     });
 
     windowMode = 'panel';
+    mainWindow.setIgnoreMouseEvents(false);
+    applyWindowShape([]);
     mainWindow.setResizable(true);
     mainWindow.setMinimumSize(340, 460);
     mainWindow.setBounds(clampedPanel);
@@ -427,7 +609,14 @@ function createSystemTray() {
   if (!iconPath || appTray) return;
 
   try {
-    appTray = new Tray(iconPath);
+    let trayIcon = iconPath;
+    if (IS_MAC) {
+      const img = nativeImage.createFromPath(iconPath);
+      if (!img.isEmpty()) {
+        trayIcon = img.resize({ width: 18, height: 18 });
+      }
+    }
+    appTray = new Tray(trayIcon);
     appTray.setToolTip(`Blink · 灵动书签 v${APP_VERSION} (AES-256 加密保护)`);
 
     const contextMenu = Menu.buildFromTemplate([
@@ -554,7 +743,15 @@ function createMainWindow() {
     if (isTransitioning || !mainWindow || mainWindow.isDestroyed()) return;
     const b = mainWindow.getBounds();
     if (windowMode === 'panel' && b.width >= 300) {
-      storage.updateSettings({ panelBounds: b });
+      const saved = storage.getSettings().panelBounds || {};
+      storage.updateSettings({
+        panelBounds: {
+          x: b.x,
+          y: b.y,
+          width: saved.width || DEFAULT_PANEL_WIDTH,
+          height: saved.height || DEFAULT_PANEL_HEIGHT
+        }
+      });
     } else if (windowMode === 'orb') {
       storage.updateSettings({ orbPosition: { x: b.x, y: b.y } });
     }
@@ -591,15 +788,39 @@ if (!gotLock) {
         callback(false);
       });
     }
+    if (IS_MAC && app.dock) {
+      try {
+        const iconPath = getIconPath();
+        if (iconPath) {
+          const dockImg = nativeImage.createFromPath(iconPath);
+          if (!dockImg.isEmpty()) app.dock.setIcon(dockImg);
+        }
+      } catch {}
+    }
     purgePlaintextLogsAndCaches();
     storage = new StorageManager(getDataDirectory());
     startBrowserBridge();
     createSystemTray();
     createMainWindow();
+
+    app.on('activate', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) {
+        createMainWindow();
+      } else {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        if (windowMode === 'orb') switchWindowMode('panel');
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
   });
 }
 
 app.on('before-quit', () => {
+  if (macBridgeTimer) {
+    clearInterval(macBridgeTimer);
+    macBridgeTimer = null;
+  }
   syncVaultToAllSafeLocations();
   if (storage) {
     storage.lock();
@@ -806,12 +1027,23 @@ ipcMain.on('window:moveBy', (_, { dx, dy } = {}) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
   const b = mainWindow.getBounds();
-  mainWindow.setBounds({
-    x: Math.round(b.x + dx),
-    y: Math.round(b.y + dy),
-    width: b.width,
-    height: b.height
-  });
+  if (windowMode === 'orb') {
+    mainWindow.setBounds({
+      x: Math.round(b.x + dx),
+      y: Math.round(b.y + dy),
+      width: ORB_SIZE,
+      height: ORB_SIZE
+    });
+    applyWindowShape(ORB_SHAPE_RECTS);
+  } else {
+    const saved = storage.getSettings().panelBounds || {};
+    mainWindow.setBounds({
+      x: Math.round(b.x + dx),
+      y: Math.round(b.y + dy),
+      width: saved.width || DEFAULT_PANEL_WIDTH,
+      height: saved.height || DEFAULT_PANEL_HEIGHT
+    });
+  }
 });
 
 ipcMain.handle('window:getPosition', () => {
@@ -823,13 +1055,23 @@ ipcMain.handle('window:getPosition', () => {
 ipcMain.on('window:setPosition', (_, { x, y } = {}) => {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-  const b = mainWindow.getBounds();
-  mainWindow.setBounds({
-    x: Math.round(x),
-    y: Math.round(y),
-    width: b.width,
-    height: b.height
-  });
+  if (windowMode === 'orb') {
+    mainWindow.setBounds({
+      x: Math.round(x),
+      y: Math.round(y),
+      width: ORB_SIZE,
+      height: ORB_SIZE
+    });
+    applyWindowShape(ORB_SHAPE_RECTS);
+  } else {
+    const saved = storage.getSettings().panelBounds || {};
+    mainWindow.setBounds({
+      x: Math.round(x),
+      y: Math.round(y),
+      width: saved.width || DEFAULT_PANEL_WIDTH,
+      height: saved.height || DEFAULT_PANEL_HEIGHT
+    });
+  }
 });
 
 ipcMain.handle('window:setAlwaysOnTop', (_, flag) => {
@@ -913,6 +1155,30 @@ function fetchJsonHttps(url, timeoutMs = 10000) {
   });
 }
 
+function getDefaultReleaseAssetName(ver) {
+  if (IS_MAC) {
+    const archTag = process.arch === 'arm64' ? 'AppleSilicon-arm64' : 'Intel-x64';
+    return `Blink-MacOS-${archTag}-${ver}.zip`;
+  }
+  return `Blink-Setup-${ver}.exe`;
+}
+
+function selectPlatformReleaseAsset(assets = []) {
+  if (!Array.isArray(assets)) return null;
+  if (IS_MAC) {
+    const isArm = process.arch === 'arm64';
+    const archPattern = isArm ? /(arm64|applesilicon|m1)/i : /(x64|intel)/i;
+    const macDmg = assets.find(a => a && a.name && /\.dmg$/i.test(a.name) && archPattern.test(a.name))
+      || assets.find(a => a && a.name && /\.dmg$/i.test(a.name));
+    if (macDmg) return macDmg;
+    const macZip = assets.find(a => a && a.name && /mac/i.test(a.name) && /\.zip$/i.test(a.name) && archPattern.test(a.name))
+      || assets.find(a => a && a.name && /mac/i.test(a.name) && /\.zip$/i.test(a.name));
+    if (macZip) return macZip;
+    return null;
+  }
+  return assets.find(a => a && a.name && /\.exe$/i.test(a.name)) || null;
+}
+
 function fetchLatestTagFromRedirect(timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     const req = https.get(
@@ -931,7 +1197,7 @@ function fetchLatestTagFromRedirect(timeoutMs = 10000) {
           resolve({
             tag_name: tag,
             latestVersion: ver,
-            downloadUrl: `https://github.com/${GITHUB_REPO}/releases/download/${tag}/Blink-Setup-${ver}.exe`,
+            downloadUrl: `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${getDefaultReleaseAssetName(ver)}`,
             html_url: `https://github.com/${GITHUB_REPO}/releases/tag/${tag}`,
             body: `Blink v${ver} 版本更新`
           });
@@ -967,13 +1233,13 @@ ipcMain.handle('update:check', async () => {
       publishedAt = release.published_at || '';
 
       if (Array.isArray(release.assets)) {
-        const exeAsset = release.assets.find(a => a && a.name && /\.exe$/i.test(a.name));
-        if (exeAsset && exeAsset.browser_download_url) {
-          downloadUrl = exeAsset.browser_download_url;
+        const matchedAsset = selectPlatformReleaseAsset(release.assets);
+        if (matchedAsset && matchedAsset.browser_download_url) {
+          downloadUrl = matchedAsset.browser_download_url;
         }
       }
       if (!downloadUrl && tagName && latestVersion) {
-        downloadUrl = `https://github.com/${GITHUB_REPO}/releases/download/${tagName}/Blink-Setup-${latestVersion}.exe`;
+        downloadUrl = `https://github.com/${GITHUB_REPO}/releases/download/${tagName}/${getDefaultReleaseAssetName(latestVersion)}`;
       }
     } catch {
       const fallback = await fetchLatestTagFromRedirect();
@@ -1117,8 +1383,6 @@ ipcMain.handle('update:downloadAndInstall', async (_, { downloadUrl, latestVersi
     syncVaultToAllSafeLocations();
 
     const cleanVer = normalizeVersion(latestVersion || 'latest').replace(/[^0-9a-zA-Z._-]/g, '');
-    const tempExePath = path.join(app.getPath('temp'), `Blink-Setup-${cleanVer}-${Date.now()}.exe`);
-
     const sendProgress = (payload) => {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update:progress', payload);
@@ -1127,6 +1391,26 @@ ipcMain.handle('update:downloadAndInstall', async (_, { downloadUrl, latestVersi
 
     sendProgress({ stage: 'downloading', percent: 1, downloadedMb: '0.0', totalMb: '...' });
 
+    if (IS_MAC) {
+      const ext = /\.dmg($|\?)/i.test(downloadUrl) ? '.dmg' : '.zip';
+      let targetDir = app.getPath('temp');
+      try {
+        targetDir = app.getPath('downloads') || targetDir;
+      } catch {}
+      const macPkgPath = path.join(targetDir, `Blink-MacOS-${cleanVer}-${Date.now()}${ext}`);
+      await downloadFileWithProgress(downloadUrl, macPkgPath, sendProgress);
+      const stat = fs.statSync(macPkgPath);
+      if (!stat || stat.size < 1024 * 1024) {
+        try { fs.unlinkSync(macPkgPath); } catch {}
+        return { ok: false, error: '下载的 macOS 安装包不完整，请重试' };
+      }
+      syncVaultToAllSafeLocations();
+      sendProgress({ stage: 'installing', percent: 100 });
+      await shell.openPath(macPkgPath);
+      return { ok: true };
+    }
+
+    const tempExePath = path.join(app.getPath('temp'), `Blink-Setup-${cleanVer}-${Date.now()}.exe`);
     await downloadFileWithProgress(downloadUrl, tempExePath, sendProgress);
 
     // Verify downloaded file is a valid Windows PE executable (> 1 MB and starts with 'MZ')
