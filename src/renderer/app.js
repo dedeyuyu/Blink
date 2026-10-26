@@ -17,8 +17,10 @@
       alwaysOnTop: true,
       autoCollapseOnBlur: true,
       keepExpanded: true,
+      closeToOrb: true,
       openMode: 'auto',
-      fontSize: 'normal'
+      fontSize: 'normal',
+      fontScale: 100
     },
     categories: [],
     bookmarks: [],
@@ -158,6 +160,7 @@
   const btnSettingsImportFile = document.getElementById('btnSettingsImportFile');
   const setAlwaysOnTop = document.getElementById('setAlwaysOnTop');
   const setAutoCollapse = document.getElementById('setAutoCollapse');
+  const setCloseToOrb = document.getElementById('setCloseToOrb');
   const setFontSize = document.getElementById('setFontSize');
   const setOpenMode = document.getElementById('setOpenMode');
   const changePwdForm = document.getElementById('changePwdForm');
@@ -362,8 +365,22 @@
 
     document.body.classList.toggle('theme-light', settings.theme === 'light');
     document.body.classList.toggle('theme-dark', settings.theme !== 'light');
-    document.body.classList.toggle('font-large', settings.fontSize === 'large');
-    document.body.classList.toggle('font-normal', settings.fontSize !== 'large');
+
+    const rawScale = Number.isFinite(settings.fontScale)
+      ? settings.fontScale
+      : (settings.fontSize === 'large' ? 115 : 100);
+    const fontScale = Math.max(70, Math.min(180, Math.round(rawScale)));
+    const ratio = fontScale / 100;
+
+    document.body.classList.toggle('font-large', fontScale >= 110);
+    document.body.classList.toggle('font-normal', fontScale < 110);
+
+    const rootStyle = document.documentElement.style;
+    rootStyle.setProperty('--bm-title-size', `${(15 * ratio).toFixed(2)}px`);
+    rootStyle.setProperty('--bm-note-size', `${(12.5 * ratio).toFixed(2)}px`);
+    rootStyle.setProperty('--cat-pill-size', `${(12.5 * ratio).toFixed(2)}px`);
+    rootStyle.setProperty('--bm-tag-size', `${(10.5 * ratio).toFixed(2)}px`);
+    rootStyle.setProperty('--search-font-size', `${(13 * ratio).toFixed(2)}px`);
 
     btnAlwaysOnTop.classList.toggle('active', Boolean(settings.alwaysOnTop));
     btnKeepExpanded.classList.toggle('active', Boolean(settings.keepExpanded));
@@ -371,9 +388,39 @@
       ? '当前：已锁定展开面板（点击切换为：失去焦点时自动缩回悬浮球）'
       : '当前：点击面板外部自动缩回悬浮球（点击可锁定保持展开）';
 
+    const closeToOrb = settings.closeToOrb !== false;
+    if (setCloseToOrb) {
+      setCloseToOrb.checked = closeToOrb;
+    }
+    if (btnCloseApp) {
+      btnCloseApp.title = closeToOrb
+        ? '缩小为小悬浮球（可在设置中改为直接关闭软件）'
+        : '退出软件';
+    }
+
     setAlwaysOnTop.checked = Boolean(settings.alwaysOnTop);
     setAutoCollapse.checked = Boolean(settings.autoCollapseOnBlur);
-    setFontSize.value = settings.fontSize || 'normal';
+
+    if (setFontSize) {
+      const strScale = String(fontScale);
+      const hasPreset = Array.from(setFontSize.options).some(
+        opt => opt.value === strScale && opt.id !== 'customFontScaleOpt'
+      );
+      let customOpt = document.getElementById('customFontScaleOpt');
+      if (!hasPreset) {
+        if (!customOpt) {
+          customOpt = document.createElement('option');
+          customOpt.id = 'customFontScaleOpt';
+          setFontSize.appendChild(customOpt);
+        }
+        customOpt.value = strScale;
+        customOpt.textContent = `滚轮自定义 (${fontScale}%)`;
+      } else if (customOpt) {
+        customOpt.remove();
+      }
+      setFontSize.value = strScale;
+    }
+
     setOpenMode.value = settings.openMode || 'auto';
   }
 
@@ -1642,9 +1689,64 @@
       btnPerformUpdate.addEventListener('click', () => handlePerformUpdate());
     }
 
-    btnCloseApp.addEventListener('click', () => {
-      window.blinkAPI.closeWindow();
+    btnCloseApp.addEventListener('click', async () => {
+      const closeToOrb = appData.settings?.closeToOrb !== false;
+      if (closeToOrb && isUnlocked) {
+        await window.blinkAPI.setWindowMode('orb');
+      } else {
+        window.blinkAPI.closeWindow();
+      }
     });
+
+    // Ctrl (Windows) / Command ⌘ (macOS) + Mouse Wheel / Keyboard (+/-) Font Zoom
+    let fontZoomToastEl = null;
+    let fontZoomToastTimer = null;
+    function showFontZoomToast(scaleVal) {
+      const pxVal = (15 * (scaleVal / 100)).toFixed(1).replace(/\.0$/, '');
+      const text = `🔍 文字大小：${scaleVal}% (${pxVal}px) · Ctrl/⌘+滚轮调节`;
+      if (!fontZoomToastEl || !fontZoomToastEl.isConnected) {
+        fontZoomToastEl = document.createElement('div');
+        fontZoomToastEl.className = 'toast';
+        toastContainer.appendChild(fontZoomToastEl);
+      }
+      fontZoomToastEl.textContent = text;
+      if (fontZoomToastTimer) clearTimeout(fontZoomToastTimer);
+      fontZoomToastTimer = setTimeout(() => {
+        if (fontZoomToastEl) {
+          fontZoomToastEl.remove();
+          fontZoomToastEl = null;
+        }
+      }, 1500);
+    }
+
+    async function setFontScaleValue(targetScale) {
+      const curScale = Number.isFinite(appData.settings?.fontScale)
+        ? appData.settings.fontScale
+        : (appData.settings?.fontSize === 'large' ? 115 : 100);
+      const nextScale = Math.max(70, Math.min(180, Math.round(targetScale)));
+      if (nextScale === curScale) {
+        showFontZoomToast(curScale);
+        return;
+      }
+      appData.settings.fontScale = nextScale;
+      applySettingsToUI(appData.settings);
+      showFontZoomToast(nextScale);
+      const updated = await window.blinkAPI.updateSettings({ fontScale: nextScale });
+      appData.settings = updated;
+    }
+
+    window.addEventListener('wheel', (e) => {
+      if (currentWindowMode === 'orb') return;
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        if (e.deltaY === 0) return;
+        const curScale = Number.isFinite(appData.settings?.fontScale)
+          ? appData.settings.fontScale
+          : (appData.settings?.fontSize === 'large' ? 115 : 100);
+        const step = e.deltaY < 0 ? 5 : -5;
+        setFontScaleValue(curScale + step);
+      }
+    }, { passive: false });
 
     // Search
     searchInput.addEventListener('input', () => {
@@ -1666,6 +1768,17 @@
         e.preventDefault();
         searchInput.focus();
         searchInput.select();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
+        e.preventDefault();
+        const cur = Number.isFinite(appData.settings?.fontScale) ? appData.settings.fontScale : 100;
+        setFontScaleValue(cur + 5);
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === '-' || e.key === '_')) {
+        e.preventDefault();
+        const cur = Number.isFinite(appData.settings?.fontScale) ? appData.settings.fontScale : 100;
+        setFontScaleValue(cur - 5);
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+        e.preventDefault();
+        setFontScaleValue(100);
       } else if (e.key === 'Escape') {
         document.querySelectorAll('.modal-backdrop').forEach(m => m.classList.add('hidden'));
       }
@@ -1678,6 +1791,7 @@
 
     // Mouse wheel horizontal scrolling on category tabs
     categoryTabs.addEventListener('wheel', (e) => {
+      if (e.ctrlKey || e.metaKey) return;
       if (e.deltaY !== 0) {
         e.preventDefault();
         categoryTabs.scrollLeft += e.deltaY;
@@ -1819,12 +1933,29 @@
       applySettingsToUI(updated);
     });
 
+    if (setCloseToOrb) {
+      setCloseToOrb.addEventListener('change', async () => {
+        const updated = await window.blinkAPI.updateSettings({
+          closeToOrb: setCloseToOrb.checked
+        });
+        appData.settings = updated;
+        applySettingsToUI(updated);
+        showToast(
+          setCloseToOrb.checked
+            ? '✨ 已设为：点右上角 × 自动缩小为小悬浮球'
+            : '已设为：点右上角 × 直接关闭软件'
+        );
+      });
+    }
+
     setFontSize.addEventListener('change', async () => {
+      const scaleVal = parseInt(setFontSize.value, 10) || 100;
       const updated = await window.blinkAPI.updateSettings({
-        fontSize: setFontSize.value
+        fontScale: scaleVal
       });
       appData.settings = updated;
       applySettingsToUI(updated);
+      showFontZoomToast(scaleVal);
     });
 
     setOpenMode.addEventListener('change', async () => {

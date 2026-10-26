@@ -45,6 +45,9 @@
 
   --bm-title-size: 15px;
   --bm-note-size: 12.5px;
+  --cat-pill-size: 12.5px;
+  --bm-tag-size: 10.5px;
+  --search-font-size: 13px;
 }
 
 body.font-large {
@@ -571,7 +574,7 @@ body.theme-light .orb-trigger-btn {
   outline: none;
   background: transparent;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--search-font-size);
   font-family: inherit;
 }
 
@@ -653,7 +656,7 @@ body.theme-light .orb-trigger-btn {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
-  font-size: 12.5px;
+  font-size: var(--cat-pill-size);
   font-weight: 600;
   display: inline-flex;
   align-items: center;
@@ -1180,7 +1183,7 @@ body.theme-light.is-dragging-bm .bookmark-card.bm-neighbor-immediate:not(.bm-car
 }
 
 .bm-cat-tag {
-  font-size: 10.5px;
+  font-size: var(--bm-tag-size);
   font-weight: 600;
   padding: 1px 6px;
   border-radius: 5px;

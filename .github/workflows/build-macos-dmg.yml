@@ -1,0 +1,83 @@
+name: Build macOS DMG & Release Packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build Apple Silicon (arm64) & Intel (x64) macOS .app and .dmg
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          ELECTRON_VER="33.4.11"
+          mkdir -p release
+
+          for ARCH in arm64 x64; do
+            LABEL="AppleSilicon"
+            if [ "$ARCH" = "x64" ]; then LABEL="Intel"; fi
+
+            ZIP_NAME="electron-v${ELECTRON_VER}-darwin-${ARCH}.zip"
+            curl -L --fail -o "/tmp/${ZIP_NAME}" "https://github.com/electron/electron/releases/download/v${ELECTRON_VER}/${ZIP_NAME}"
+
+            WORK_DIR="/tmp/blink-mac-${ARCH}"
+            rm -rf "$WORK_DIR"
+            mkdir -p "$WORK_DIR/dmg-root"
+            unzip -q "/tmp/${ZIP_NAME}" -d "$WORK_DIR"
+
+            mv "$WORK_DIR/Electron.app" "$WORK_DIR/dmg-root/Blink.app"
+            APP_BUNDLE="$WORK_DIR/dmg-root/Blink.app"
+
+            rm -f "$APP_BUNDLE/Contents/Resources/default_app.asar"
+            cp "./logo.icns" "$APP_BUNDLE/Contents/Resources/electron.icns"
+
+            /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Blink" "$APP_BUNDLE/Contents/Info.plist" || true
+            /usr/libexec/PlistBuddy -c "Set :CFBundleName Blink" "$APP_BUNDLE/Contents/Info.plist" || true
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.blink.bookmark.manager" "$APP_BUNDLE/Contents/Info.plist" || true
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "$APP_BUNDLE/Contents/Info.plist" || true
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "$APP_BUNDLE/Contents/Info.plist" || true
+
+            APP_RES="$APP_BUNDLE/Contents/Resources/app"
+            mkdir -p "$APP_RES/src/main" "$APP_RES/src/renderer" "$APP_RES/data"
+            cp ./package.json ./logo.ico ./logo.png ./logo.icns "$APP_RES/"
+            cp ./src/main/* "$APP_RES/src/main/"
+            cp ./src/renderer/* "$APP_RES/src/renderer/"
+            cat > "$APP_RES/data/blink-store.json" << 'EOF'
+          {
+            "version": 2,
+            "auth": { "isInitialized": false, "salt": "", "verifier": "", "passwordHint": "" },
+            "settings": {
+              "theme": "dark",
+              "alwaysOnTop": true,
+              "autoCollapseOnBlur": true,
+              "keepExpanded": true,
+              "openMode": "auto",
+              "fontSize": "normal",
+              "cardLayout": "list",
+              "panelBounds": { "width": 400, "height": 650, "x": null, "y": null },
+              "orbPosition": { "x": null, "y": null }
+            },
+            "categories": [],
+            "bookmarks": [],
+            "encryptedVault": null
+          }
+          EOF
+
+            xattr -cr "$APP_BUNDLE"
+            codesign --force --deep --sign - "$APP_BUNDLE"
+
+            ln -s /Applications "$WORK_DIR/dmg-root/Applications"
+            DMG_PATH="release/Blink-MacOS-${LABEL}-${ARCH}-${VERSION}.dmg"
+            hdiutil create -volname "Blink ${VERSION}" -srcfolder "$WORK_DIR/dmg-root" -ov -format UDZO "$DMG_PATH"
+          done

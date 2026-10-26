@@ -431,12 +431,24 @@
 
             <div class="setting-item">
               <div>
-                <div class="setting-name">书签备注字体大小</div>
-                <div class="setting-sub">调整书签文字的醒目程度</div>
+                <div class="setting-name">点击右上角「×」时缩小为小悬浮球</div>
+                <div class="setting-sub">默认开启：点 × 不退出而是变为桌面小悬浮球；关闭此项则点 × 直接关闭软件</div>
+              </div>
+              <input type="checkbox" id="setCloseToOrb" class="toggle-checkbox" checked />
+            </div>
+
+            <div class="setting-item">
+              <div>
+                <div class="setting-name">界面与书签文字大小</div>
+                <div class="setting-sub">支持按住 <strong>Ctrl</strong>（苹果 Mac 为 <strong>⌘ Command</strong>）+ <strong>鼠标滚轮</strong> 随时无级放大/缩小</div>
               </div>
               <select id="setFontSize" class="glass-select small-select">
-                <option value="normal">标准清晰 (15px)</option>
-                <option value="large">超大醒目 (17px)</option>
+                <option value="80">紧凑小字 (80%)</option>
+                <option value="90">偏小适中 (90%)</option>
+                <option value="100">标准清晰 (100%)</option>
+                <option value="115">偏大醒目 (115%)</option>
+                <option value="130">大字模式 (130%)</option>
+                <option value="150">超大字体 (150%)</option>
               </select>
             </div>
 
