@@ -128,8 +128,161 @@ function parseBookmarkHtmlFile(filePath) {
   return parseBookmarkHtml(content);
 }
 
+function escapeHtmlEntities(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Checks if raw file content (either .html with embedded BLINK-BACKUP-DATA meta tag or .json backup)
+ * contains a full lossless Blink backup payload ({ categories, bookmarks }).
+ * Returns { categories, bookmarks } if detected, or null otherwise.
+ */
+function parseBlinkBackupFromContent(content) {
+  if (!content || typeof content !== 'string') return null;
+  if (content.length > MAX_BOOKMARK_FILE_BYTES) {
+    throw new Error('备份文件体积超过 32MB 安全上限');
+  }
+
+  const trimmed = content.trim();
+
+  // 1. Check if it is a JSON backup file
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && Array.isArray(parsed.bookmarks)) {
+        return {
+          categories: Array.isArray(parsed.categories) ? parsed.categories : [],
+          bookmarks: parsed.bookmarks
+        };
+      }
+    } catch {
+      // Not valid JSON, continue checking HTML meta tag
+    }
+  }
+
+  // 2. Check if it is a Blink-exported HTML file with <META NAME="BLINK-BACKUP-DATA" CONTENT="...">
+  const metaMatch = content.match(/<META\s+NAME=["']BLINK-BACKUP-DATA["']\s+CONTENT=["']([A-Za-z0-9+/=]+)["']\s*\/?>/i);
+  if (metaMatch && metaMatch[1]) {
+    try {
+      const jsonStr = Buffer.from(metaMatch[1], 'base64').toString('utf-8');
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && Array.isArray(parsed.bookmarks)) {
+        return {
+          categories: Array.isArray(parsed.categories) ? parsed.categories : [],
+          bookmarks: parsed.bookmarks
+        };
+      }
+    } catch {
+      // Fallback to standard HTML bookmark parser
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Generates a dual-compatible Netscape-Bookmark-file-1 HTML file that:
+ * 1) Embeds 100% lossless Blink metadata (categories, colors, order, notes, pinned state) in <META NAME="BLINK-BACKUP-DATA">
+ * 2) Renders standard <DL>/<DT>/<H3>/<A>/<DD> structure compatible with Chrome, Edge, Brave, Firefox, Safari, etc.
+ */
+function generateBlinkExportHtml(categories = [], bookmarks = [], appVersion = '1.0.1') {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const backupPayload = {
+    app: 'Blink',
+    format: 'blink-backup-v1',
+    version: appVersion,
+    exportedAt: new Date().toISOString(),
+    categories,
+    bookmarks
+  };
+  const base64Payload = Buffer.from(JSON.stringify(backupPayload), 'utf-8').toString('base64');
+
+  const lines = [
+    '<!DOCTYPE NETSCAPE-Bookmark-file-1>',
+    '<!-- This is an automatically generated backup file by Blink (灵动书签).',
+    '     Can be imported directly into Blink on a new computer (restores all categories, colors, notes & order)',
+    '     or imported into Chrome / Edge / Brave / Safari. -->',
+    '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
+    `<META NAME="BLINK-BACKUP-DATA" CONTENT="${base64Payload}">`,
+    '<TITLE>Blink 灵动书签备份</TITLE>',
+    '<H1>Blink 灵动书签备份</H1>',
+    '<DL><p>'
+  ];
+
+  const byCat = new Map();
+  const uncategorized = [];
+  const validCatIds = new Set(categories.map(c => c.id));
+
+  for (const bm of bookmarks) {
+    if (!bm || !bm.url) continue;
+    if (bm.categoryId && validCatIds.has(bm.categoryId)) {
+      if (!byCat.has(bm.categoryId)) byCat.set(bm.categoryId, []);
+      byCat.get(bm.categoryId).push(bm);
+    } else {
+      uncategorized.push(bm);
+    }
+  }
+
+  for (const cat of categories) {
+    if (!cat || !cat.name) continue;
+    const catAddDate = cat.createdAt ? Math.floor(Number(cat.createdAt) / 1000) : nowSec;
+    lines.push(`    <DT><H3 ADD_DATE="${catAddDate}" LAST_MODIFIED="${nowSec}" BLINK_COLOR="${escapeHtmlEntities(cat.color || 'indigo')}">${escapeHtmlEntities(cat.name)}</H3>`);
+    lines.push('    <DL><p>');
+    const items = byCat.get(cat.id) || [];
+    for (const bm of items) {
+      const addDate = bm.createdAt ? Math.floor(Number(bm.createdAt) / 1000) : nowSec;
+      const pinnedAttr = bm.pinned ? ' BLINK_PINNED="1"' : '';
+      const colorAttr = bm.color ? ` BLINK_COLOR="${escapeHtmlEntities(bm.color)}"` : '';
+      lines.push(`        <DT><A HREF="${escapeHtmlEntities(bm.url)}" ADD_DATE="${addDate}"${colorAttr}${pinnedAttr}>${escapeHtmlEntities(bm.title || bm.url)}</A>`);
+      if (bm.note && String(bm.note).trim()) {
+        lines.push(`        <DD>${escapeHtmlEntities(String(bm.note).trim())}`);
+      }
+    }
+    lines.push('    </DL><p>');
+  }
+
+  for (const bm of uncategorized) {
+    const addDate = bm.createdAt ? Math.floor(Number(bm.createdAt) / 1000) : nowSec;
+    const pinnedAttr = bm.pinned ? ' BLINK_PINNED="1"' : '';
+    const colorAttr = bm.color ? ` BLINK_COLOR="${escapeHtmlEntities(bm.color)}"` : '';
+    lines.push(`    <DT><A HREF="${escapeHtmlEntities(bm.url)}" ADD_DATE="${addDate}"${colorAttr}${pinnedAttr}>${escapeHtmlEntities(bm.title || bm.url)}</A>`);
+    if (bm.note && String(bm.note).trim()) {
+      lines.push(`    <DD>${escapeHtmlEntities(String(bm.note).trim())}`);
+    }
+  }
+
+  lines.push('</DL><p>');
+  lines.push('');
+  return lines.join('\r\n');
+}
+
+function generateBlinkExportJson(categories = [], bookmarks = [], appVersion = '1.0.1') {
+  return JSON.stringify(
+    {
+      app: 'Blink',
+      format: 'blink-backup-v1',
+      version: appVersion,
+      exportedAt: new Date().toISOString(),
+      categories,
+      bookmarks
+    },
+    null,
+    2
+  );
+}
+
 module.exports = {
   parseBookmarkHtml,
-  parseBookmarkHtmlFile
+  parseBookmarkHtmlFile,
+  parseBlinkBackupFromContent,
+  generateBlinkExportHtml,
+  generateBlinkExportJson
 };
+
 

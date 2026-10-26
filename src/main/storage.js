@@ -762,6 +762,142 @@ class StorageManager {
       data: this.getAllData()
     };
   }
+
+  // Export all categories & bookmarks for cross-computer migration
+  getExportPayload() {
+    if (!this.isUnlocked()) return { ok: false, error: '书签库已上锁，请先解锁后再导出' };
+    const categories = [...this.unlockedVault.categories].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const bookmarks = [...this.unlockedVault.bookmarks].sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+        return a.pinned ? -1 : 1;
+      }
+      return (a.order ?? 0) - (b.order ?? 0);
+    });
+    return {
+      ok: true,
+      categories,
+      bookmarks
+    };
+  }
+
+  // Lossless Import from Blink Backup File (恢复全部分类夹、颜色、备注、置顶与排序，不覆盖已有书签)
+  importBlinkBackup(backupPayload, options = {}) {
+    if (!this.isUnlocked()) return { ok: false, error: '书签库已上锁，请先解锁' };
+    if (!backupPayload || !Array.isArray(backupPayload.bookmarks)) {
+      return { ok: false, error: '无效的 Blink 书签备份文件' };
+    }
+
+    const palette = ['indigo', 'emerald', 'amber', 'violet', 'rose', 'cyan', 'pink', 'teal'];
+    let addedBookmarks = 0;
+    let addedCategories = 0;
+    const now = Date.now();
+
+    const categoryNameMap = new Map();
+    this.unlockedVault.categories.forEach(c => {
+      if (c && c.name) {
+        categoryNameMap.set(String(c.name).trim().toLowerCase(), c);
+      }
+    });
+
+    const oldCatIdToNewId = new Map();
+    const rawCategories = Array.isArray(backupPayload.categories)
+      ? [...backupPayload.categories].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      : [];
+
+    for (let i = 0; i < rawCategories.length; i++) {
+      const srcCat = rawCategories[i];
+      if (!srcCat || !srcCat.name || !String(srcCat.name).trim()) continue;
+      const cleanName = String(srcCat.name).trim();
+      const key = cleanName.toLowerCase();
+
+      let targetCat = categoryNameMap.get(key);
+      if (!targetCat) {
+        targetCat = {
+          id: 'cat_bak_' + now + '_' + addedCategories + '_' + Math.random().toString(36).slice(2, 6),
+          name: cleanName,
+          color: sanitizeColor(srcCat.color || palette[(this.unlockedVault.categories.length + addedCategories) % palette.length]),
+          order: this.unlockedVault.categories.length,
+          createdAt: Number(srcCat.createdAt) || now
+        };
+        this.unlockedVault.categories.push(targetCat);
+        categoryNameMap.set(key, targetCat);
+        addedCategories++;
+      }
+
+      if (srcCat.id) {
+        oldCatIdToNewId.set(String(srcCat.id), targetCat.id);
+      }
+    }
+
+    // Optional override folder if user specified one for uncategorized items
+    let fallbackCat = null;
+    if (options.defaultFolderName && String(options.defaultFolderName).trim()) {
+      const fbName = String(options.defaultFolderName).trim();
+      const fbKey = fbName.toLowerCase();
+      fallbackCat = categoryNameMap.get(fbKey);
+      if (!fallbackCat) {
+        fallbackCat = {
+          id: 'cat_bak_' + now + '_' + addedCategories + '_' + Math.random().toString(36).slice(2, 6),
+          name: fbName,
+          color: palette[(this.unlockedVault.categories.length + addedCategories) % palette.length],
+          order: this.unlockedVault.categories.length,
+          createdAt: now
+        };
+        this.unlockedVault.categories.push(fallbackCat);
+        categoryNameMap.set(fbKey, fallbackCat);
+        addedCategories++;
+      }
+    }
+
+    let maxOrder = this.unlockedVault.bookmarks.reduce((max, item) => Math.max(max, item.order ?? 0), -1);
+    const sortedBookmarks = [...backupPayload.bookmarks].sort((a, b) => {
+      if (Boolean(a?.pinned) !== Boolean(b?.pinned)) {
+        return a?.pinned ? -1 : 1;
+      }
+      return (a?.order ?? 0) - (b?.order ?? 0);
+    });
+
+    for (let i = 0; i < sortedBookmarks.length; i++) {
+      const item = sortedBookmarks[i];
+      if (!item || !item.url) continue;
+      const safeUrl = normalizeSafeHttpUrl(String(item.url));
+      if (!safeUrl) continue;
+
+      const cleanTitle = (item.title && String(item.title).trim()) || safeUrl;
+      const cleanNote = item.note ? String(item.note).trim() : '';
+
+      let resolvedCategoryId = '';
+      if (item.categoryId && oldCatIdToNewId.has(String(item.categoryId))) {
+        resolvedCategoryId = oldCatIdToNewId.get(String(item.categoryId));
+      } else if (fallbackCat) {
+        resolvedCategoryId = fallbackCat.id;
+      }
+
+      maxOrder++;
+      const newBm = {
+        id: 'bm_bak_' + now + '_' + i + '_' + Math.random().toString(36).slice(2, 6),
+        title: cleanTitle,
+        note: cleanNote,
+        url: safeUrl,
+        categoryId: resolvedCategoryId,
+        color: sanitizeColor(item.color || palette[i % palette.length]),
+        pinned: Boolean(item.pinned),
+        order: maxOrder,
+        createdAt: Number(item.createdAt) || (now + i)
+      };
+
+      this.unlockedVault.bookmarks.push(newBm);
+      addedBookmarks++;
+    }
+
+    this._save();
+    return {
+      ok: true,
+      addedBookmarks,
+      addedCategories,
+      data: this.getAllData()
+    };
+  }
 }
 
 module.exports = { StorageManager, normalizeSafeHttpUrl, sanitizeColor };

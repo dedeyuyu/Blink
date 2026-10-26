@@ -96,6 +96,7 @@
   const btnAddCategory = document.getElementById('btnAddCategory');
   const colorFilterBar = document.getElementById('colorFilterBar');
   const btnQuickImport = document.getElementById('btnQuickImport');
+  const btnQuickExport = document.getElementById('btnQuickExport');
   const btnToggleBatch = document.getElementById('btnToggleBatch');
 
   const batchActionBar = document.getElementById('batchActionBar');
@@ -157,6 +158,7 @@
   const updateProgressText = document.getElementById('updateProgressText');
   const btnPerformUpdate = document.getElementById('btnPerformUpdate');
   const importDefaultFolderInput = document.getElementById('importDefaultFolderInput');
+  const btnSettingsExportFile = document.getElementById('btnSettingsExportFile');
   const btnSettingsImportFile = document.getElementById('btnSettingsImportFile');
   const setAlwaysOnTop = document.getElementById('setAlwaysOnTop');
   const setAutoCollapse = document.getElementById('setAutoCollapse');
@@ -1073,7 +1075,7 @@
     });
   }
 
-  // ==================== IMPORT BOOKMARKS ====================
+  // ==================== IMPORT & EXPORT BOOKMARKS ====================
   async function triggerImportBookmarks(defaultFolder = '') {
     const res = await window.blinkAPI.importBookmarksFromFile(defaultFolder);
     if (!res || res.canceled) return;
@@ -1083,7 +1085,19 @@
     }
     appData = res.data;
     renderAll();
-    showToast(`🎉 成功新增导入 ${res.addedBookmarks} 个书签！`);
+    const catNote = res.addedCategories > 0 ? `（含 ${res.addedCategories} 个分类夹）` : '';
+    showToast(`🎉 成功导入 ${res.addedBookmarks} 个书签${catNote}！`);
+  }
+
+  async function triggerExportBookmarks() {
+    if (!window.blinkAPI.exportBookmarksToFile) return;
+    const res = await window.blinkAPI.exportBookmarksToFile();
+    if (!res || res.canceled) return;
+    if (!res.ok) {
+      showToast('❌ ' + (res.error || '导出失败'));
+      return;
+    }
+    showToast(`📤 已成功导出 ${res.exportedBookmarks} 个书签！复制到新电脑点击「导入」即可恢复`);
   }
 
   // ==================== FLOATING ORB DRAG & EXPAND ====================
@@ -1798,9 +1812,15 @@
       }
     }, { passive: false });
 
-    // Quick Import
+    // Quick Import & Export
     btnQuickImport.addEventListener('click', () => triggerImportBookmarks(''));
+    if (btnQuickExport) {
+      btnQuickExport.addEventListener('click', () => triggerExportBookmarks());
+    }
     btnEmptyImport.addEventListener('click', () => triggerImportBookmarks(''));
+    if (btnSettingsExportFile) {
+      btnSettingsExportFile.addEventListener('click', () => triggerExportBookmarks());
+    }
     btnSettingsImportFile.addEventListener('click', () => {
       triggerImportBookmarks(importDefaultFolderInput.value.trim());
     });

@@ -4,7 +4,13 @@ const fs = require('fs');
 const https = require('https');
 const { spawn, execFile, execFileSync } = require('child_process');
 const { StorageManager, normalizeSafeHttpUrl } = require('./storage');
-const { parseBookmarkHtml, parseBookmarkHtmlFile } = require('./bookmarkParser');
+const {
+  parseBookmarkHtml,
+  parseBookmarkHtmlFile,
+  parseBlinkBackupFromContent,
+  generateBlinkExportHtml,
+  generateBlinkExportJson
+} = require('./bookmarkParser');
 
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
@@ -947,17 +953,19 @@ ipcMain.handle('bookmark:open', async (_, { url, explicitHwnd }) => {
   return { ok: true, target: latestBrowserTarget };
 });
 
-// Import HTML Bookmarks (Additive)
-ipcMain.handle('bookmark:importFile', async (_, { defaultFolderName }) => {
+// Import & Export Bookmarks (支持跨电脑迁移 Blink 完整备份文件 & 浏览器 HTML 书签)
+ipcMain.handle('bookmark:importFile', async (_, { defaultFolderName } = {}) => {
   if (!isUnlocked || !storage.isUnlocked()) {
     return { ok: false, error: '请先输入密码解锁后再导入书签' };
   }
   isDialogOpen = true;
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: '选择浏览器导出的 HTML 书签文件（增量导入，不覆盖现有书签）',
+      title: '选择 Blink 书签备份文件或浏览器导出的 HTML 书签文件（增量导入，不覆盖现有书签）',
       filters: [
-        { name: 'HTML 书签文件', extensions: ['html', 'htm'] },
+        { name: '书签备份与浏览器书签 (*.html; *.htm; *.json)', extensions: ['html', 'htm', 'json', 'blink'] },
+        { name: 'HTML 书签文件 (*.html; *.htm)', extensions: ['html', 'htm'] },
+        { name: 'Blink JSON 备份 (*.json)', extensions: ['json', 'blink'] },
         { name: '所有文件', extensions: ['*'] }
       ],
       properties: ['openFile', 'multiSelections']
@@ -967,17 +975,48 @@ ipcMain.handle('bookmark:importFile', async (_, { defaultFolderName }) => {
       return { ok: false, canceled: true };
     }
 
-    let allParsed = [];
+    let totalAddedBookmarks = 0;
+    let totalAddedCategories = 0;
+    let allHtmlParsed = [];
+
     for (const filePath of result.filePaths) {
-      const items = parseBookmarkHtmlFile(filePath);
-      allParsed = allParsed.concat(items);
+      const stat = fs.statSync(filePath);
+      if (stat.size > 32 * 1024 * 1024) {
+        return { ok: false, error: '所选书签文件体积超过 32MB 安全上限' };
+      }
+      const rawContent = fs.readFileSync(filePath, 'utf-8');
+      const blinkBackup = parseBlinkBackupFromContent(rawContent);
+      if (blinkBackup) {
+        const res = storage.importBlinkBackup(blinkBackup, { defaultFolderName });
+        if (res && res.ok) {
+          totalAddedBookmarks += res.addedBookmarks || 0;
+          totalAddedCategories += res.addedCategories || 0;
+        }
+      } else {
+        const items = parseBookmarkHtml(rawContent);
+        allHtmlParsed = allHtmlParsed.concat(items);
+      }
     }
 
-    if (allParsed.length === 0) {
+    if (allHtmlParsed.length > 0) {
+      const res = storage.importBookmarksAdditive(allHtmlParsed, { defaultFolderName });
+      if (res && res.ok) {
+        totalAddedBookmarks += res.addedBookmarks || 0;
+        totalAddedCategories += res.addedCategories || 0;
+      }
+    }
+
+    if (totalAddedBookmarks === 0 && totalAddedCategories === 0) {
       return { ok: false, error: '未在所选文件中解析到有效书签链接' };
     }
 
-    return storage.importBookmarksAdditive(allParsed, { defaultFolderName });
+    syncVaultToAllSafeLocations();
+    return {
+      ok: true,
+      addedBookmarks: totalAddedBookmarks,
+      addedCategories: totalAddedCategories,
+      data: storage.getAllData()
+    };
   } catch (err) {
     return { ok: false, error: '导入失败: ' + err.message };
   } finally {
@@ -987,18 +1026,84 @@ ipcMain.handle('bookmark:importFile', async (_, { defaultFolderName }) => {
   }
 });
 
-ipcMain.handle('bookmark:importHtml', (_, { htmlContent, defaultFolderName }) => {
+ipcMain.handle('bookmark:importHtml', (_, { htmlContent, defaultFolderName } = {}) => {
   if (!isUnlocked || !storage.isUnlocked()) {
     return { ok: false, error: '请先输入密码解锁后再导入书签' };
   }
   try {
+    const blinkBackup = parseBlinkBackupFromContent(htmlContent);
+    if (blinkBackup) {
+      const res = storage.importBlinkBackup(blinkBackup, { defaultFolderName });
+      syncVaultToAllSafeLocations();
+      return res;
+    }
     const items = parseBookmarkHtml(htmlContent);
     if (items.length === 0) {
       return { ok: false, error: '未能解析到书签内容' };
     }
-    return storage.importBookmarksAdditive(items, { defaultFolderName });
+    const res = storage.importBookmarksAdditive(items, { defaultFolderName });
+    syncVaultToAllSafeLocations();
+    return res;
   } catch (err) {
     return { ok: false, error: '导入失败: ' + err.message };
+  }
+});
+
+ipcMain.handle('bookmark:exportFile', async () => {
+  if (!isUnlocked || !storage.isUnlocked()) {
+    return { ok: false, error: '请先输入密码解锁后再导出书签' };
+  }
+  const payload = storage.getExportPayload();
+  if (!payload || !payload.ok) {
+    return payload || { ok: false, error: '获取书签数据失败' };
+  }
+
+  const { categories, bookmarks } = payload;
+  if ((!bookmarks || bookmarks.length === 0) && (!categories || categories.length === 0)) {
+    return { ok: false, error: '当前书签库为空，暂无可导出的书签' };
+  }
+
+  isDialogOpen = true;
+  try {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const defaultFileName = `Blink-书签备份-${yyyy}-${mm}-${dd}.html`;
+    const desktopDir = app.getPath('desktop') || app.getPath('documents') || '';
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: '导出全部书签备份（换新电脑时点击「导入书签」即可一键恢复）',
+      defaultPath: desktopDir ? path.join(desktopDir, defaultFileName) : defaultFileName,
+      filters: [
+        { name: 'Blink 完整书签备份 (兼容浏览器 HTML)', extensions: ['html'] },
+        { name: 'Blink 专属数据备份 (JSON)', extensions: ['json'] }
+      ]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { ok: false, canceled: true };
+    }
+
+    const savePath = result.filePath;
+    const isJson = savePath.toLowerCase().endsWith('.json');
+    const fileContent = isJson
+      ? generateBlinkExportJson(categories, bookmarks, APP_VERSION)
+      : generateBlinkExportHtml(categories, bookmarks, APP_VERSION);
+
+    fs.writeFileSync(savePath, fileContent, 'utf-8');
+    return {
+      ok: true,
+      exportedBookmarks: bookmarks.length,
+      exportedCategories: categories.length,
+      filePath: savePath
+    };
+  } catch (err) {
+    return { ok: false, error: '导出失败: ' + err.message };
+  } finally {
+    setTimeout(() => {
+      isDialogOpen = false;
+    }, 300);
   }
 });
 

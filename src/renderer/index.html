@@ -182,8 +182,11 @@
         </div>
 
         <div class="sub-toolbar-right">
-          <button id="btnQuickImport" class="text-action-btn" title="从谷歌/Edge/Brave导出的HTML文件增量导入书签">
-            📥 导入书签
+          <button id="btnQuickImport" class="text-action-btn" title="导入 Blink 书签备份文件或浏览器导出的 HTML 书签文件（增量导入，不覆盖现有书签）">
+            📥 导入
+          </button>
+          <button id="btnQuickExport" class="text-action-btn" title="导出软件中所有书签与分类备份（更换电脑时可直接在新电脑导入恢复）">
+            📤 导出
           </button>
           <button id="btnToggleBatch" class="text-action-btn" title="开启整理模式后，可按住书签上下拖拽排序、批量归类或删除（防止日常点击误触）">
             ⇅ 整理
@@ -397,15 +400,16 @@
             </div>
           </div>
 
-          <!-- Section A: Import Bookmarks -->
+          <!-- Section A: Export & Import Bookmarks -->
           <div class="settings-section">
-            <div class="section-title">📥 导入浏览器书签（增量新增 · 不覆盖）</div>
+            <div class="section-title">📥📤 书签导出备份与导入（换电脑迁移 · 不覆盖）</div>
             <p class="section-desc">
-              支持导入从 Google Chrome、Brave、Microsoft Edge 等导出的 HTML 书签文件。每次导入均为<strong>新增书签</strong>，绝不会覆盖您现有的书签。
+              更换电脑时可点击「<strong>导出全部书签备份</strong>」生成备份文件，在新电脑上点击「<strong>导入书签</strong>」即可一键恢复所有分类夹、颜色、备注、置顶与排序；同时也支持导入 Chrome、Brave、Edge 导出的 HTML 书签文件（增量导入，绝不覆盖现有书签）。
             </p>
             <div class="import-row">
-              <input type="text" id="importDefaultFolderInput" class="glass-input" placeholder="默认导入分类名（选填，默认保留原文件夹名）" />
-              <button type="button" id="btnSettingsImportFile" class="primary-btn">选择 HTML 文件导入</button>
+              <button type="button" id="btnSettingsExportFile" class="secondary-btn full-width export-highlight-btn">📤 导出软件中全部书签备份（更换电脑迁移）</button>
+              <input type="text" id="importDefaultFolderInput" class="glass-input" placeholder="默认导入分类名（选填，默认保留原分类夹）" />
+              <button type="button" id="btnSettingsImportFile" class="primary-btn full-width">📥 选择 Blink 备份文件或浏览器 HTML 导入</button>
             </div>
           </div>
 

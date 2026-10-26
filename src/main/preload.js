@@ -37,11 +37,13 @@ const api = Object.freeze({
   moveBookmarkToTop: (bookmarkId) => invoke('bookmark:moveToTop', bookmarkId),
   openBookmark: (url, explicitHwnd) => invoke('bookmark:open', { url, explicitHwnd }),
 
-  // Import HTML Bookmarks (Additive)
+  // Import & Export Bookmarks (Cross-Computer Backup & Browser HTML)
   importBookmarksFromFile: (defaultFolderName) =>
     invoke('bookmark:importFile', { defaultFolderName }),
   importBookmarksFromHtml: (htmlContent, defaultFolderName) =>
     invoke('bookmark:importHtml', { htmlContent, defaultFolderName }),
+  exportBookmarksToFile: () =>
+    invoke('bookmark:exportFile'),
 
   // Browser Target Tracking
   getBrowserTarget: () => invoke('browser:getTarget'),
