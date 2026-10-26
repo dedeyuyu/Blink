@@ -48,8 +48,10 @@ class StorageManager {
       alwaysOnTop: true,
       autoCollapseOnBlur: true,
       keepExpanded: true,
+      closeToOrb: true,
       openMode: 'auto',
       fontSize: 'normal',
+      fontScale: 100,
       cardLayout: 'list',
       panelBounds: { width: 400, height: 650, x: null, y: null },
       orbPosition: { x: null, y: null }
@@ -57,50 +59,9 @@ class StorageManager {
   }
 
   _getDefaultVault() {
-    const now = Date.now();
     return {
-      categories: [
-        { id: 'cat_common', name: '高频常用', color: 'indigo', order: 0, createdAt: now },
-        { id: 'cat_work', name: '工作台', color: 'emerald', order: 1, createdAt: now },
-        { id: 'cat_web3', name: '多开与项目', color: 'amber', order: 2, createdAt: now },
-        { id: 'cat_ai', name: 'AI 工具箱', color: 'violet', order: 3, createdAt: now },
-        { id: 'cat_read', name: '资料与灵感', color: 'rose', order: 4, createdAt: now }
-      ],
-      bookmarks: [
-        {
-          id: 'bm_demo_1',
-          title: 'Google 搜索主页 · 常用检索入口',
-          note: '点击即在您刚刚操作的浏览器窗口中新建标签页打开',
-          url: 'https://www.google.com',
-          categoryId: 'cat_common',
-          color: 'indigo',
-          pinned: true,
-          order: 0,
-          createdAt: now
-        },
-        {
-          id: 'bm_demo_2',
-          title: 'GitHub 开源代码仓库与项目管理',
-          note: '日常开发代码托管平台',
-          url: 'https://github.com',
-          categoryId: 'cat_work',
-          color: 'emerald',
-          pinned: false,
-          order: 1,
-          createdAt: now
-        },
-        {
-          id: 'bm_demo_3',
-          title: '哔哩哔哩 Bilibili · 视频与教程参考',
-          note: '学习资料与休闲视频收藏',
-          url: 'https://www.bilibili.com',
-          categoryId: 'cat_read',
-          color: 'rose',
-          pinned: false,
-          order: 2,
-          createdAt: now
-        }
-      ]
+      categories: [],
+      bookmarks: []
     };
   }
 
@@ -187,6 +148,14 @@ class StorageManager {
             auth.encryptionSalt = crypto.randomBytes(16).toString('hex');
           }
           const settings = { ...defaultSettings, ...(parsed.settings || {}) };
+          if (typeof settings.closeToOrb !== 'boolean') {
+            settings.closeToOrb = true;
+          }
+          if (!Number.isFinite(settings.fontScale)) {
+            settings.fontScale = settings.fontSize === 'large' ? 115 : 100;
+          } else {
+            settings.fontScale = Math.max(70, Math.min(180, Math.round(settings.fontScale)));
+          }
 
           const state = {
             auth,
@@ -388,6 +357,18 @@ class StorageManager {
         this._save();
       }
 
+      // Remove hardcoded demo bookmarks (bm_demo_1, bm_demo_2, bm_demo_3) if present, while preserving 100% of user bookmarks
+      if (this.unlockedVault && Array.isArray(this.unlockedVault.bookmarks)) {
+        const DEMO_IDS = new Set(['bm_demo_1', 'bm_demo_2', 'bm_demo_3']);
+        const beforeCount = this.unlockedVault.bookmarks.length;
+        this.unlockedVault.bookmarks = this.unlockedVault.bookmarks.filter(
+          b => b && !DEMO_IDS.has(b.id)
+        );
+        if (this.unlockedVault.bookmarks.length !== beforeCount) {
+          this._save();
+        }
+      }
+
       return { ok: true };
     } catch (err) {
       if (derivedKey && Buffer.isBuffer(derivedKey) && this.sessionKey !== derivedKey) {
@@ -452,11 +433,18 @@ class StorageManager {
     if (typeof partial.keepExpanded === 'boolean') {
       next.keepExpanded = partial.keepExpanded;
     }
+    if (typeof partial.closeToOrb === 'boolean') {
+      next.closeToOrb = partial.closeToOrb;
+    }
     if (partial.openMode === 'auto' || partial.openMode === 'hotkey' || partial.openMode === 'cmdline') {
       next.openMode = partial.openMode;
     }
     if (partial.fontSize === 'normal' || partial.fontSize === 'large') {
       next.fontSize = partial.fontSize;
+    }
+    if (Number.isFinite(partial.fontScale)) {
+      next.fontScale = Math.max(70, Math.min(180, Math.round(partial.fontScale)));
+      next.fontSize = next.fontScale >= 110 ? 'large' : 'normal';
     }
     if (partial.panelBounds && typeof partial.panelBounds === 'object') {
       const pb = partial.panelBounds;
