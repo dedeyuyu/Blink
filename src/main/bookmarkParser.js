@@ -191,7 +191,7 @@ function parseBlinkBackupFromContent(content) {
  * 1) Embeds 100% lossless Blink metadata (categories, colors, order, notes, pinned state) in <META NAME="BLINK-BACKUP-DATA">
  * 2) Renders standard <DL>/<DT>/<H3>/<A>/<DD> structure compatible with Chrome, Edge, Brave, Firefox, Safari, etc.
  */
-function generateBlinkExportHtml(categories = [], bookmarks = [], appVersion = '1.0.1') {
+function generateBlinkExportHtml(categories = [], bookmarks = [], appVersion = '1.0.2') {
   const nowSec = Math.floor(Date.now() / 1000);
   const backupPayload = {
     app: 'Blink',
@@ -262,7 +262,7 @@ function generateBlinkExportHtml(categories = [], bookmarks = [], appVersion = '
   return lines.join('\r\n');
 }
 
-function generateBlinkExportJson(categories = [], bookmarks = [], appVersion = '1.0.1') {
+function generateBlinkExportJson(categories = [], bookmarks = [], appVersion = '1.0.2') {
   return JSON.stringify(
     {
       app: 'Blink',

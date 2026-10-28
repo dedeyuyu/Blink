@@ -41,7 +41,7 @@
   let draggedBookmarkId = null;
   let pendingDeleteCatId = null;
 
-  let currentAppVersion = '1.0.1';
+  let currentAppVersion = '1.0.2';
   let latestUpdateInfo = null;
   let suppressNextCatClick = false;
   let suppressNextBmClick = false;

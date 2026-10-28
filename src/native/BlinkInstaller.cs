@@ -94,7 +94,7 @@ namespace BlinkInstaller
 
         public InstallerForm()
         {
-            this.Text = "Blink · 灵动书签 v1.0.1 安装向导";
+            this.Text = "Blink · 灵动书签 v1.0.2 安装向导";
             this.Size = new Size(540, 410);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -131,7 +131,7 @@ namespace BlinkInstaller
 
             Label lblTitle = new Label
             {
-                Text = "Blink · 灵动书签 v1.0.1",
+                Text = "Blink · 灵动书签 v1.0.2",
                 Font = new Font("Microsoft YaHei UI", 15f, FontStyle.Bold),
                 ForeColor = Color.White,
                 Location = new Point(94, 20),
@@ -747,7 +747,7 @@ namespace BlinkInstaller
                     if (key != null)
                     {
                         key.SetValue("DisplayName", "Blink · 灵动书签");
-                        key.SetValue("DisplayVersion", "1.0.1");
+                        key.SetValue("DisplayVersion", "1.0.2");
                         key.SetValue("Publisher", "Blink Desktop");
                         key.SetValue("DisplayIcon", iconFile);
                         key.SetValue("InstallLocation", targetDir);

@@ -14,7 +14,7 @@ const {
 
 const IS_MAC = process.platform === 'darwin';
 const IS_WIN = process.platform === 'win32';
-const APP_VERSION = app.getVersion() || '1.0.1';
+const APP_VERSION = app.getVersion() || '1.0.2';
 const GITHUB_REPO = 'dedeyuyu/Blink';
 
 // Disable Chromium HTTP & disk caches so no bookmark/UI residue is ever written to Chromium disk cache
