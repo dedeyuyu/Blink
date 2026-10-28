@@ -1248,6 +1248,17 @@ body.theme-light .bm-act-btn {
   color: #fff;
 }
 
+.bm-act-btn.act-copy:hover {
+  background: #10b981;
+  color: #fff;
+}
+
+.bm-act-btn.act-copy.copied {
+  background: #10b981;
+  color: #fff;
+  transform: scale(1.08);
+}
+
 .bm-act-btn.del:hover {
   background: #f43f5e;
   color: #fff;

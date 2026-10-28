@@ -36,6 +36,7 @@ const api = Object.freeze({
     invoke('bookmark:reorder', { movedId, orderedIds, newCategoryId }),
   moveBookmarkToTop: (bookmarkId) => invoke('bookmark:moveToTop', bookmarkId),
   openBookmark: (url, explicitHwnd) => invoke('bookmark:open', { url, explicitHwnd }),
+  copyBookmarkUrl: (url) => invoke('bookmark:copyUrl', url),
 
   // Import & Export Bookmarks (Cross-Computer Backup & Browser HTML)
   importBookmarksFromFile: (defaultFolderName) =>

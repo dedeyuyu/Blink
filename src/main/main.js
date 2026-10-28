@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, screen, shell, Tray, Menu, session, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen, shell, Tray, Menu, session, nativeImage, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -951,6 +951,22 @@ ipcMain.handle('bookmark:open', async (_, { url, explicitHwnd }) => {
   }
 
   return { ok: true, target: latestBrowserTarget };
+});
+
+ipcMain.handle('bookmark:copyUrl', (_, url) => {
+  if (!isUnlocked || !storage.isUnlocked()) {
+    return { ok: false, error: '书签库已锁定' };
+  }
+  const targetUrl = normalizeSafeHttpUrl(url);
+  if (!targetUrl) {
+    return { ok: false, error: '无效的书签链接' };
+  }
+  try {
+    clipboard.writeText(targetUrl);
+    return { ok: true, url: targetUrl };
+  } catch (err) {
+    return { ok: false, error: '复制失败: ' + err.message };
+  }
 });
 
 // Import & Export Bookmarks (支持跨电脑迁移 Blink 完整备份文件 & 浏览器 HTML 书签)

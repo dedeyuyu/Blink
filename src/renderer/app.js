@@ -667,6 +667,12 @@
           </div>
 
           <div class="bm-actions">
+            <button class="bm-act-btn act-copy" data-id="${escapeHtml(bm.id)}" title="复制书签链接">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+              </svg>
+            </button>
             <button class="bm-act-btn act-top" data-id="${escapeHtml(bm.id)}" title="移到最上面">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
                 <path d="M12 19V5M5 12l7-7 7 7"/>
@@ -729,6 +735,42 @@
         chk.addEventListener('mousedown', (e) => e.stopPropagation());
         chk.addEventListener('change', () => {
           toggleBatchSelection(bmId, chk.checked);
+        });
+      }
+
+      // Copy link button
+      const btnCopy = card.querySelector('.act-copy');
+      if (btnCopy) {
+        btnCopy.addEventListener('mousedown', (e) => e.stopPropagation());
+        btnCopy.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          let copiedOk = false;
+          if (window.blinkAPI.copyBookmarkUrl) {
+            const res = await window.blinkAPI.copyBookmarkUrl(bm.url);
+            copiedOk = Boolean(res && res.ok);
+          }
+          if (!copiedOk && navigator.clipboard && navigator.clipboard.writeText) {
+            try {
+              await navigator.clipboard.writeText(bm.url);
+              copiedOk = true;
+            } catch {}
+          }
+          if (copiedOk) {
+            btnCopy.classList.add('copied');
+            const origHtml = btnCopy.innerHTML;
+            btnCopy.innerHTML = `
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            `;
+            setTimeout(() => {
+              btnCopy.classList.remove('copied');
+              btnCopy.innerHTML = origHtml;
+            }, 1200);
+            showToast(`📋 已复制链接：${bm.title}`);
+          } else {
+            showToast('❌ 复制链接失败');
+          }
         });
       }
 
